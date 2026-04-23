@@ -1,48 +1,85 @@
 # pdf-translator
 
-Pipeline Python de traduction de PDF scientifiques FR -> EN avec preservation maximale de la structure utile a une future recomposition PDF.
+`pdf-translator` is a work-in-progress Python pipeline for translating scientific PDFs from French to English while preserving as much structure and visual fidelity as possible.
 
-## Etat actuel
+The long-term goal is not just text translation, but faithful PDF reconstruction:
 
-La v1 locale sait deja faire :
+- preserve layout
+- preserve figures, diagrams, and page structure
+- protect technical tokens and sensitive fragments
+- prepare a future overlay / in-place recomposition workflow
 
-- ouvrir un PDF born-digital
-- extraire une IR structuree avec PyMuPDF
-- proteger certains segments sensibles avant traduction
-- traduire via LM Studio local
-- restaurer les placeholders
-- ecrire le resultat dans `data/debug/document_ir.json`
+The current version is an `accuracy-first` local prototype. It is intentionally conservative, debuggable, and slower than a production system would be.
 
-La v1 ne fait pas encore :
+## Current Status
 
-- la recomposition PDF finale
-- l'overlay in-place
-- la gestion avancee des tableaux complexes
-- la gestion fine des formules scientifiques
-- la QA visuelle finale
+What already works:
 
-## Structure du projet
+- structured PDF extraction with PyMuPDF
+- intermediate representation (IR) in JSON
+- placeholder protection for technical fragments
+- local translation through LM Studio
+- batch translation with validation and fallbacks
+- repeated block / slide chrome audit
+- overlay-ready and pre-overlay diagnostic artifacts
+- visual overlay previews on selected pages
+
+What is not finished yet:
+
+- final translated PDF reconstruction
+- true overlay / replacement rendering
+- OCR for text embedded in raster images
+- advanced formula / equation handling
+- robust table reconstruction
+- production-grade performance and scaling
+
+## Why This Project Exists
+
+Many scientific PDFs are difficult to translate well because they contain:
+
+- multi-column layouts
+- repeated headers and footers
+- diagrams and callouts
+- images with embedded text
+- equations, notation, and symbolic labels
+- exported slide decks with heavy visual structure
+
+This project is being built in stages:
+
+1. establish a reliable local prototype
+2. validate extraction and translation behavior on real documents
+3. prepare overlay-friendly region selection
+4. move to a stronger runtime and better models
+5. scale up once the architecture is correct
+
+## Repository Layout
 
 ```text
 pdf-translator/
-├── .env
 ├── .env.example
+├── README.md
 ├── data/
 │   ├── input/
 │   ├── output/
 │   └── debug/
 ├── scripts/
 ├── src/pdf_translator/
+│   ├── compose/
+│   ├── extract/
+│   ├── qa/
+│   └── translate/
 └── tests/
 ```
 
-## Environnement local de reference
+## Local Stack
 
-- Python: `3.9.6`
-- venv: `.venv`
-- backend local: LM Studio
-- modele local teste: `translategemma-4b-it`
-- endpoint local: `http://localhost:4000/v1`
+Reference local environment used during development:
+
+- Python `3.9.6`
+- local virtual environment in `.venv`
+- LM Studio local server
+- tested model: `translategemma-4b-it`
+- local API base: `http://localhost:4000/v1`
 
 ## Installation
 
@@ -54,7 +91,9 @@ pip install -e .
 
 ## Configuration
 
-Variables principales dans `.env` :
+Main settings live in `.env`.
+
+Example:
 
 ```env
 PDF_TRANSLATOR_MODEL_BACKEND=lmstudio
@@ -68,127 +107,151 @@ PDF_TRANSLATOR_BATCH_MAX_SEGMENTS=2
 PDF_TRANSLATOR_BATCH_MAX_CHARS=800
 ```
 
-## Reglages stables recommandes sur cette machine
+## Recommended Stable Settings
 
-Pour le Mac local actuel, le profil le plus stable observe est :
+For the current local machine, the most stable profile observed so far is:
 
+- `PDF_TRANSLATOR_REQUEST_TIMEOUT_SECONDS=45`
 - `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_LINES=1`
 - `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_CHARS=160`
 - `PDF_TRANSLATOR_BATCH_MAX_SEGMENTS=2`
 - `PDF_TRANSLATOR_BATCH_MAX_CHARS=800`
-- `PDF_TRANSLATOR_REQUEST_TIMEOUT_SECONDS=45`
 
-Avec ces reglages, `scientifique-mixte.pdf` a ete traite avec succes en `11` batchs.
+These defaults favor reliability over speed.
 
-## Mode contextuel experimental
+## Main Commands
 
-Le code supporte deja un regroupement contextuel multi-lignes dans `src/pdf_translator/translate/batching.py`.
-
-But :
-
-- donner plus de contexte au modele
-- ameliorer la qualite sur les phrases coupees sur plusieurs lignes
-
-Etat actuel :
-
-- prometteur sur le fond
-- encore trop fragile avec `translategemma-4b-it` sur cette machine
-- conserve dans le code, mais desactive par defaut via la config
-
-Pour le reactiver plus tard sur une machine plus puissante, augmenter par exemple :
-
-- `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_LINES`
-- `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_CHARS`
-
-et revalider le comportement du modele.
-
-## Utilisation
-
-Commande principale :
+Inspect a PDF and write the intermediate representation:
 
 ```bash
-./.venv/bin/python -m pdf_translator.cli data/input/monfichier.pdf
+./.venv/bin/python -m pdf_translator.cli inspect data/input/myfile.pdf
 ```
 
-ou, si le package est bien installe dans le venv :
+Run a targeted audit on selected pages:
 
 ```bash
-pdf-translator data/input/monfichier.pdf
+./.venv/bin/python -m pdf_translator.cli audit-sample data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-Le resultat intermediaire est ecrit dans :
-
-```text
-data/debug/document_ir.json
-```
-
-## Tests
-
-Commande recommandee :
+Generate overlay-ready candidate blocks:
 
 ```bash
-./.venv/bin/python -m pytest
+./.venv/bin/python -m pdf_translator.cli overlay-ready data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-## Jeux de test utiles
+Generate pre-overlay regions with bounding boxes:
 
-Dans `data/input/` :
+```bash
+./.venv/bin/python -m pdf_translator.cli pre-overlay data/input/myfile.pdf --pages "1,3,10,22"
+```
 
-- `docnavettepourtestsimple.pdf` : premier PDF simple historique
-- `simple-fr.pdf` : texte francais continu avec placeholders
-- `scientifique-mixte.pdf` : cas le plus representatif actuellement
-- `layout-tricky.pdf` : mise en page plus delicate
+Generate visual overlay diagnostics:
 
-Regeneration des PDF synthetiques :
+```bash
+./.venv/bin/python -m pdf_translator.cli overlay-preview data/input/myfile.pdf --pages "1,3,10,22"
+```
+
+Generate a readable translation preview:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli translation-preview data/input/myfile.pdf --pages "10,22"
+```
+
+## Debug Artifacts
+
+The pipeline writes useful intermediate artifacts under `data/debug/`, including:
+
+- `document_ir.json`
+- audit reports
+- overlay-ready reports
+- pre-overlay reports
+- overlay preview PDFs and PNGs
+- translation preview files
+
+These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
+
+## Test Inputs
+
+Synthetic and real test PDFs currently used:
+
+- `docnavettepourtestsimple.pdf`
+- `simple-fr.pdf`
+- `scientifique-mixte.pdf`
+- `layout-tricky.pdf`
+
+Synthetic PDFs can be regenerated with:
 
 ```bash
 ./.venv/bin/python scripts/generate_test_pdfs.py
 ```
 
-## Placeholders proteges actuellement
+## Placeholder Protection
 
-Protections deja implementees :
+The current pipeline protects:
 
 - emails
 - URLs
-- commits / hashes longs
-- dates ISO
-- versions logicielles de type `x.y.z`
+- long commit hashes
+- ISO dates
+- software versions like `x.y.z`
 
-## Comportement de securite de la v1
+This helps reduce accidental corruption during translation.
 
-Le pipeline est maintenant defensif :
+## Real-World Document Strategy
 
-- validation stricte des IDs de sortie
-- validation des placeholders preserves
-- tolerance a certains preambules parasites du modele comme `### Response:`
-- fallback si un batch echoue
-- preservation directe du `protected_text` si le backend timeout
+The project is currently being validated on two kinds of real documents:
 
-L'objectif ici est de privilegier une v1 locale stable et transferable.
+- a PowerPoint-exported teaching deck with dense layout and many images
+- a smaller hybrid PDF with less predictable extraction quality
 
-## Checklist de transfert vers une machine plus puissante
+This is intentional:
 
-Quand le projet sera deplace vers un environnement plus fort :
+- slide-export PDFs are a strong target for overlay preparation
+- hybrid PDFs are useful later for OCR readiness and robustness testing
 
-1. recreer un venv propre
-2. installer le package avec `pip install -e .`
-3. recopier `.env` puis ajuster le backend et le modele
-4. verifier `python -m pytest`
-5. tester `simple-fr.pdf`
-6. tester `scientifique-mixte.pdf`
-7. seulement apres, augmenter progressivement :
-   - `PDF_TRANSLATOR_REQUEST_TIMEOUT_SECONDS`
-   - `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_LINES`
-   - `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_CHARS`
-   - `PDF_TRANSLATOR_BATCH_MAX_SEGMENTS`
-   - `PDF_TRANSLATOR_BATCH_MAX_CHARS`
+## Known Limitations
 
-## Prochaine etape recommandee
+- local model output can still be inconsistent on difficult blocks
+- some long regions may still time out locally
+- OCR is not implemented yet
+- diagram text embedded in images is not handled yet
+- formula-heavy scientific notation still needs dedicated logic
+- current heuristics are useful, but not final
 
-La prochaine grande etape produit est :
+## Roadmap
 
-1. garder cette v1 stable comme base
-2. transferer sur une machine plus puissante
-3. reessayer le mode contextuel multi-lignes
-4. ensuite attaquer la couche overlay / recomposition PDF
+Short term:
+
+1. keep the local v1 stable
+2. continue improving overlay region selection
+3. start the first real overlay / replacement planning pass
+
+Medium term:
+
+1. move to a stronger runtime and model stack
+2. reactivate and validate richer contextual grouping
+3. add OCR for image-based text
+
+Long term:
+
+1. reconstruct translated PDFs faithfully
+2. support diagrams, figures, and embedded text
+3. scale the pipeline for larger documents and faster throughput
+
+## Development
+
+Run tests with:
+
+```bash
+./.venv/bin/python -m pytest
+```
+
+The project currently prioritizes:
+
+- correctness over speed
+- inspectability over opacity
+- transferability over local overfitting
+
+## License
+
+No license has been added yet.
