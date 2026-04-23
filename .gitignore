@@ -14,3 +14,5 @@ data/input/CHAPITRE_3_LesJonctions_Cours_Physique_Dispos.pdf
 data/input/Séance 2 TD1 hétérogénéité plasmide REPONSES.pdf
 
 src/*.egg-info/
+
+data/input/*REPONSES.pdf
