@@ -6,6 +6,88 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from pdf_translator.translate.glossary import translate_scientific_label
+
+
+def _vertical_overlap_ratio(bbox_a: dict[str, Any], bbox_b: dict[str, Any]) -> float:
+    a_y0 = float(bbox_a.get("y0", 0))
+    a_y1 = float(bbox_a.get("y1", 0))
+    b_y0 = float(bbox_b.get("y0", 0))
+    b_y1 = float(bbox_b.get("y1", 0))
+    overlap = max(0.0, min(a_y1, b_y1) - max(a_y0, b_y0))
+    min_height = min(max(0.0, a_y1 - a_y0), max(0.0, b_y1 - b_y0))
+    if min_height <= 0:
+        return 0.0
+    return overlap / min_height
+
+
+def _merge_bboxes(blocks: list[dict[str, Any]]) -> dict[str, float]:
+    return {
+        "x0": min(float(block.get("bbox", {}).get("x0", 0)) for block in blocks),
+        "y0": min(float(block.get("bbox", {}).get("y0", 0)) for block in blocks),
+        "x1": max(float(block.get("bbox", {}).get("x1", 0)) for block in blocks),
+        "y1": max(float(block.get("bbox", {}).get("y1", 0)) for block in blocks),
+    }
+
+
+def _merge_text_blocks(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    merged_lines: list[dict[str, Any]] = []
+    merged_text_parts: list[str] = []
+
+    for block in blocks:
+        text = block.get("text", "").strip()
+        if text:
+            if text == "-":
+                merged_text_parts.append("-")
+            elif merged_text_parts and merged_text_parts[-1] == "-":
+                merged_text_parts.append(text)
+            else:
+                merged_text_parts.append(text)
+
+        for line in block.get("lines", []):
+            merged_lines.append(
+                {
+                    "text": line.get("text", ""),
+                    "bbox": line.get("bbox", {}),
+                    "spans": line.get("spans", []),
+                }
+            )
+
+    merged_text = ""
+    for part in merged_text_parts:
+        if not merged_text:
+            merged_text = part
+        elif part == "-":
+            merged_text = f"{merged_text} -"
+        elif merged_text.endswith("-"):
+            merged_text = f"{merged_text} {part}"
+        else:
+            merged_text = f"{merged_text} {part}"
+
+    first_block = blocks[0]
+    return {
+        "block_index": first_block.get("block_index"),
+        "role": "slide_title",
+        "bbox": _merge_bboxes(blocks),
+        "text": merged_text,
+        "line_count": len(merged_lines),
+        "lines": merged_lines,
+    }
+
+
+def _should_merge_into_slide_title(base_block: dict[str, Any], candidate_block: dict[str, Any]) -> bool:
+    if candidate_block.get("role") not in {"header", "page_number", "diagram_token"}:
+        return False
+
+    text = candidate_block.get("text", "").strip()
+    if text != "-" and not re.fullmatch(r"\d+", text):
+        return False
+
+    base_bbox = base_block.get("bbox", {})
+    candidate_bbox = candidate_block.get("bbox", {})
+    x_gap = float(candidate_bbox.get("x0", 0)) - float(base_bbox.get("x1", 0))
+    return x_gap <= 16 and _vertical_overlap_ratio(base_bbox, candidate_bbox) >= 0.9
+
 
 def normalize_block_text(text: str) -> str:
     normalized = text.strip()
@@ -21,6 +103,7 @@ def infer_block_role(
     page_height: float,
 ) -> str:
     text = block.get("text", "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     bbox = block.get("bbox", {})
     y0 = float(bbox.get("y0", 0))
     y1 = float(bbox.get("y1", 0))
@@ -29,6 +112,8 @@ def infer_block_role(
         return "page_number"
 
     compact_text = text.replace("\n", "").replace(" ", "")
+    uppercase_words = re.findall(r"[A-ZÀ-ÖØ-Þ]{2,}", text)
+
     if len(compact_text) <= 3:
         if re.fullmatch(r"[A-ZΑ-Ωα-ω]+", compact_text):
             return "diagram_token"
@@ -36,6 +121,21 @@ def infer_block_role(
             return "diagram_token"
         if re.fullmatch(r"[+\-=/|*A-ZΑ-Ωα-ω]+", compact_text):
             return "diagram_token"
+
+    if (
+        y0 < page_height * 0.08
+        and len(text) >= 24
+        and len(uppercase_words) >= 3
+    ):
+        return "slide_title"
+
+    if (
+        y0 < page_height * 0.18
+        and 5 <= repeat_count < 80
+        and len(text) >= 20
+        and len(uppercase_words) >= 3
+    ):
+        return "slide_title"
 
     if repeat_count >= 20:
         if y0 < page_height * 0.18:
@@ -46,7 +146,6 @@ def infer_block_role(
     if text in {"-", "–", "—"}:
         return "ornament"
 
-    uppercase_words = re.findall(r"[A-ZÀ-ÖØ-Þ]{2,}", text)
     if uppercase_words and len(text) <= 24:
         if len(uppercase_words) >= 1 and re.fullmatch(r"[A-ZÀ-ÖØ-Þ0-9\s|+\-_/]+", text):
             return "diagram_label"
@@ -55,6 +154,12 @@ def infer_block_role(
         tokens = [token.strip() for token in text.split("|")]
         non_empty_tokens = [token for token in tokens if token]
         if non_empty_tokens and all(len(token) <= 6 for token in non_empty_tokens):
+            return "diagram_label"
+
+    if 2 <= len(lines) <= 4:
+        if all(len(line) <= 6 for line in lines) and all(
+            re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9+\-=/|*.]+", line) for line in lines
+        ):
             return "diagram_label"
 
     if "\uf06e" in text:
@@ -230,6 +335,7 @@ def build_overlay_ready_report(
     document_ir: dict[str, Any],
     selected_pages: list[int],
 ) -> dict[str, Any]:
+    candidate_roles = {"content", "slide_title", "diagram_label"}
     pages = [
         page
         for page in document_ir.get("pages", [])
@@ -242,28 +348,48 @@ def build_overlay_ready_report(
 
     for page in pages:
         candidates: list[dict[str, Any]] = []
+        blocks = page.get("text_blocks", [])
+        index = 0
 
-        for block in page.get("text_blocks", []):
-            if block.get("role") != "content":
+        while index < len(blocks):
+            block = blocks[index]
+            if block.get("role") not in candidate_roles:
+                index += 1
                 continue
 
-            lines = [
-                {
-                    "text": line.get("text", ""),
-                    "bbox": line.get("bbox", {}),
-                }
-                for line in block.get("lines", [])
-            ]
+            if block.get("role") == "diagram_label" and translate_scientific_label(block.get("text", "")) is None:
+                index += 1
+                continue
 
-            candidates.append(
-                {
+            if block.get("role") == "slide_title":
+                title_blocks = [block]
+                lookahead = index + 1
+                while lookahead < len(blocks) and _should_merge_into_slide_title(block, blocks[lookahead]):
+                    title_blocks.append(blocks[lookahead])
+                    lookahead += 1
+                candidate = _merge_text_blocks(title_blocks)
+                index = lookahead
+            else:
+                lines = [
+                    {
+                        "text": line.get("text", ""),
+                        "bbox": line.get("bbox", {}),
+                        "spans": line.get("spans", []),
+                    }
+                    for line in block.get("lines", [])
+                ]
+
+                candidate = {
                     "block_index": block.get("block_index"),
+                    "role": block.get("role"),
                     "bbox": block.get("bbox", {}),
                     "text": block.get("text", ""),
                     "line_count": len(lines),
                     "lines": lines,
                 }
-            )
+                index += 1
+
+            candidates.append(candidate)
 
         total_candidate_blocks += len(candidates)
         total_candidate_lines += sum(item["line_count"] for item in candidates)

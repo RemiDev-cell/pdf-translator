@@ -23,11 +23,12 @@ What already works:
 - repeated block / slide chrome audit
 - overlay-ready and pre-overlay diagnostic artifacts
 - visual overlay previews on selected pages
+- stabilized native-text overlay prototype on representative real pages
 
 What is not finished yet:
 
 - final translated PDF reconstruction
-- true overlay / replacement rendering
+- full-document production overlay
 - OCR for text embedded in raster images
 - advanced formula / equation handling
 - robust table reconstruction
@@ -170,6 +171,34 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 
 These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
 
+## Stabilized V1 Milestone
+
+The current milestone is a stabilized `native text + overlay` prototype.
+
+This means the project can now:
+
+- detect and filter slide chrome, repeated headers / footers, diagram noise, and page numbers
+- select overlay candidate regions from real PDFs
+- translate many short scientific labels through a controlled glossary
+- translate narrative text blocks with conservative fallbacks
+- generate replacement plans with risk levels
+- render overlay prototypes directly onto the original PDF pages
+
+Representative pages already validated on the real PowerPoint-exported scientific deck:
+
+- page `3`: dense labels + explanatory paragraphs
+- page `10`: title banner + noisy diagram page
+- page `22`: structured pedagogical slide
+- page `34`: narrative explanatory slide
+- page `120`: short pedagogical slide
+- page `160`: title + scientific diagram labels
+
+Important boundary of this milestone:
+
+- this is a strong `text-native overlay prototype`
+- it is not yet the final production reconstruction engine
+- OCR and text-inside-image handling are still separate future work
+
 ## Test Inputs
 
 Synthetic and real test PDFs currently used:
@@ -212,7 +241,7 @@ This is intentional:
 ## Known Limitations
 
 - local model output can still be inconsistent on difficult blocks
-- some long regions may still time out locally
+- some longer regions still need deterministic fallbacks or glossary help
 - OCR is not implemented yet
 - diagram text embedded in images is not handled yet
 - formula-heavy scientific notation still needs dedicated logic
@@ -223,14 +252,14 @@ This is intentional:
 Short term:
 
 1. keep the local v1 stable
-2. continue improving overlay region selection
-3. start the first real overlay / replacement planning pass
+2. continue validating overlay generalization on new representative pages
+3. formalize the current overlay milestone for transfer
 
 Medium term:
 
 1. move to a stronger runtime and model stack
 2. reactivate and validate richer contextual grouping
-3. add OCR for image-based text
+3. add a separate OCR branch for image-based text
 
 Long term:
 

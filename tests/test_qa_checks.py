@@ -8,9 +8,11 @@ from pdf_translator.qa.checks import (
     write_audit_report,
     write_overlay_ready_report,
 )
+from pdf_translator.translate.glossary import translate_scientific_label
+from pdf_translator.translate.glossary import translate_outline_sentence, translate_slide_title
 
 
-def test_annotate_repeated_blocks_marks_repeated_header_and_footer() -> None:
+def test_annotate_repeated_blocks_marks_slide_title_page_number_and_content() -> None:
     document_ir = {
         "pages": [
             {
@@ -19,7 +21,7 @@ def test_annotate_repeated_blocks_marks_repeated_header_and_footer() -> None:
                 "text_blocks": [
                     {
                         "bbox": {"y0": 20, "y1": 40},
-                        "text": "COURSE TITLE 1",
+                        "text": "THERMODYNAMIC PN JUNCTION TITLE 1",
                     },
                     {
                         "bbox": {"y0": 300, "y1": 360},
@@ -38,7 +40,7 @@ def test_annotate_repeated_blocks_marks_repeated_header_and_footer() -> None:
     annotated = annotate_repeated_blocks(document_ir)
     summary = collect_role_summary(annotated)
 
-    assert summary["header"] == 25
+    assert summary["slide_title"] == 25
     assert summary["page_number"] == 25
     assert summary["repeated_chrome"] == 25
 
@@ -112,6 +114,26 @@ def test_annotate_repeated_blocks_marks_short_uppercase_schema_labels() -> None:
     assert roles == ["diagram_label", "diagram_label", "diagram_label", "content"]
 
 
+def test_annotate_repeated_blocks_marks_multiline_schema_labels() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "height": 540,
+                "text_blocks": [
+                    {"bbox": {"y0": 150, "y1": 190}, "text": "x\nxn\n-xp"},
+                    {"bbox": {"y0": 10, "y1": 30}, "text": "PRINCIPE DE FONCTIONNEMENT DE LA CELLULE PHOTOVOLTAIQUE"},
+                ],
+            }
+        ]
+    }
+
+    annotated = annotate_repeated_blocks(document_ir)
+    roles = [block["role"] for block in annotated["pages"][0]["text_blocks"]]
+
+    assert roles == ["diagram_label", "slide_title"]
+
+
 def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     report = {
         "selected_pages": [1],
@@ -129,7 +151,7 @@ def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     assert "Audited pages: 1" in text_path.read_text()
 
 
-def test_build_overlay_ready_report_keeps_only_content_blocks(tmp_path) -> None:
+def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_path) -> None:
     document_ir = {
         "pages": [
             {
@@ -151,6 +173,15 @@ def test_build_overlay_ready_report_keeps_only_content_blocks(tmp_path) -> None:
                             {"text": "useful text", "bbox": {"x0": 10, "y0": 11, "x1": 12, "y1": 13}}
                         ],
                     },
+                    {
+                        "block_index": 2,
+                        "role": "slide_title",
+                        "bbox": {"x0": 20, "y0": 21, "x1": 22, "y1": 23},
+                        "text": "CHAPTER TITLE",
+                        "lines": [
+                            {"text": "CHAPTER TITLE", "bbox": {"x0": 20, "y0": 21, "x1": 22, "y1": 23}}
+                        ],
+                    },
                 ],
             }
         ]
@@ -160,8 +191,114 @@ def test_build_overlay_ready_report_keeps_only_content_blocks(tmp_path) -> None:
     text = overlay_ready_report_to_text(report)
     json_path, text_path = write_overlay_ready_report(report, tmp_path, "overlay_ready")
 
-    assert report["total_candidate_blocks"] == 1
+    assert report["total_candidate_blocks"] == 2
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
-    assert "candidate_blocks=1" in text
+    assert report["pages"][0]["candidates"][1]["block_index"] == 2
+    assert "candidate_blocks=2" in text
     assert json_path.exists()
     assert text_path.exists()
+
+
+def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 10,
+                "text_blocks": [
+                    {
+                        "block_index": 3,
+                        "role": "slide_title",
+                        "bbox": {"x0": 100, "y0": 10, "x1": 300, "y1": 30},
+                        "text": "MAIN TITLE",
+                        "lines": [{"text": "MAIN TITLE", "bbox": {"x0": 100, "y0": 10, "x1": 300, "y1": 30}, "spans": []}],
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "header",
+                        "bbox": {"x0": 302, "y0": 10, "x1": 308, "y1": 30},
+                        "text": "-",
+                        "lines": [{"text": "-", "bbox": {"x0": 302, "y0": 10, "x1": 308, "y1": 30}, "spans": []}],
+                    },
+                    {
+                        "block_index": 5,
+                        "role": "header",
+                        "bbox": {"x0": 310, "y0": 10, "x1": 320, "y1": 30},
+                        "text": "2",
+                        "lines": [{"text": "2", "bbox": {"x0": 310, "y0": 10, "x1": 320, "y1": 30}, "spans": []}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [10])
+
+    assert report["total_candidate_blocks"] == 1
+    assert report["pages"][0]["candidates"][0]["text"] == "MAIN TITLE - 2"
+    assert report["pages"][0]["candidates"][0]["bbox"] == {"x0": 100.0, "y0": 10.0, "x1": 320.0, "y1": 30.0}
+
+
+def test_build_overlay_ready_report_keeps_only_glossary_backed_diagram_labels() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 160,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "diagram_label",
+                        "bbox": {"x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                        "text": "CONTACT OHMIQUE",
+                        "lines": [{"text": "CONTACT OHMIQUE", "bbox": {"x0": 10, "y0": 10, "x1": 80, "y1": 20}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "diagram_label",
+                        "bbox": {"x0": 10, "y0": 30, "x1": 40, "y1": 40},
+                        "text": "ZDR P",
+                        "lines": [{"text": "ZDR P", "bbox": {"x0": 10, "y0": 30, "x1": 40, "y1": 40}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [160])
+
+    assert report["total_candidate_blocks"] == 1
+    assert report["pages"][0]["candidates"][0]["text"] == "CONTACT OHMIQUE"
+    assert translate_scientific_label("CONTACT OHMIQUE") == "OHMIC CONTACT"
+    assert translate_scientific_label("Semiconducteur") == "Semiconductor"
+    assert translate_scientific_label("Tension d'avalanche") == "Breakdown voltage"
+    assert translate_scientific_label("Si type P") == "P-type Si"
+    assert translate_scientific_label("Homojonction") == "Homojunction"
+
+
+def test_glossary_supports_page_120_pedagogical_lines() -> None:
+    assert translate_slide_title("JONCTION P/N EN DYNAMIQUE") == "JUNCTION P/N UNDER DYNAMIC CONDITIONS"
+    assert translate_outline_sentence("1 - La Conductance de la jonction") == "1 - Junction conductance"
+    assert (
+        translate_outline_sentence("Nous aborderons donc le calcul de :")
+        == "We will therefore examine the calculation of:"
+    )
+    assert (
+        translate_outline_sentence("2 - La Capacité de Stockage et de Transition")
+        == "2 - Storage and transition capacitance"
+    )
+
+
+def test_glossary_supports_page_34_pedagogical_lines() -> None:
+    assert (
+        translate_outline_sentence(
+            "Commençons par une polarisation en direct, pour cela c’est facile :\nOn relie la région P du matériau SC au pole + d’un générateur de tension et"
+        )
+        == "Let us begin with forward biasing; it is simple:\nThe P region of the semiconductor is connected to the + terminal of a voltage source and"
+    )
+    assert (
+        translate_outline_sentence("Commençons par une polarisation en direct, pour cela c’est facile :")
+        == "Let us begin with forward biasing; it is quite straightforward:"
+    )
+    assert (
+        translate_outline_sentence("On relie la région P du matériau SC au pole + d’un générateur de tension et")
+        == "The P region of the semiconductor is connected to the positive terminal of a voltage source and"
+    )
