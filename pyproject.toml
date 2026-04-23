@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-translator"
+version = "0.1.0"
+description = "Faithful PDF translation pipeline for scientific course materials"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+dependencies = [
+  "pymupdf>=1.26.0,<1.27",
+  "pydantic>=2.7,<3",
+  "python-dotenv>=1.0,<2",
+  "typer>=0.12,<1",
+  "rich>=13.7,<14"
+]
+
+[project.scripts]
+pdf-translator = "pdf_translator.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

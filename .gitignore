@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+.vscode/
+data/debug/
+
+data/input/CHAPITRE_3_LesJonctions_Cours_Physique_Dispos.pdf
+data/input/Séance 2 TD1 hétérogénéité plasmide REPONSES.pdf
+
+data/input/CHAPITRE_3_LesJonctions_Cours_Physique_Dispos.pdf
+data/input/Séance 2 TD1 hétérogénéité plasmide REPONSES.pdf
+
+src/*.egg-info/
