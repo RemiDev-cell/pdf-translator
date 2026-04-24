@@ -24,12 +24,13 @@ What already works:
 - overlay-ready and pre-overlay diagnostic artifacts
 - visual overlay previews on selected pages
 - stabilized native-text overlay prototype on representative real pages
+- experimental OCR branch for raster-image text, with debug crops, OCR review, mixed native/OCR translation preview, and diagnostic overlay output
 
 What is not finished yet:
 
 - final translated PDF reconstruction
 - full-document production overlay
-- OCR for text embedded in raster images
+- production OCR recomposition for text embedded in raster images
 - advanced formula / equation handling
 - robust table reconstruction
 - production-grade performance and scaling
@@ -67,7 +68,9 @@ pdf-translator/
 ├── src/pdf_translator/
 │   ├── compose/
 │   ├── extract/
+│   ├── ocr/
 │   ├── qa/
+│   ├── routing.py
 │   └── translate/
 └── tests/
 ```
@@ -81,6 +84,7 @@ Reference local environment used during development:
 - LM Studio local server
 - tested model: `translategemma-4b-it`
 - local API base: `http://localhost:4000/v1`
+- optional Tesseract OCR binary for the experimental OCR workflow
 
 ## Installation
 
@@ -88,6 +92,12 @@ Reference local environment used during development:
 /usr/bin/python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+
+For the experimental OCR workflow on macOS:
+
+```bash
+brew install tesseract
 ```
 
 ## Configuration
@@ -106,6 +116,8 @@ PDF_TRANSLATOR_CONTEXT_GROUP_MAX_LINES=1
 PDF_TRANSLATOR_CONTEXT_GROUP_MAX_CHARS=160
 PDF_TRANSLATOR_BATCH_MAX_SEGMENTS=2
 PDF_TRANSLATOR_BATCH_MAX_CHARS=800
+PDF_TRANSLATOR_OCR_BACKEND=auto
+PDF_TRANSLATOR_OCR_TESSERACT_BIN=tesseract
 ```
 
 ## Recommended Stable Settings
@@ -158,6 +170,12 @@ Generate a readable translation preview:
 ./.venv/bin/python -m pdf_translator.cli translation-preview data/input/myfile.pdf --pages "10,22"
 ```
 
+Run the experimental OCR workflow on a hybrid or scanned-image PDF:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
+```
+
 ## Debug Artifacts
 
 The pipeline writes useful intermediate artifacts under `data/debug/`, including:
@@ -168,6 +186,8 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 - pre-overlay reports
 - overlay preview PDFs and PNGs
 - translation preview files
+- OCR candidate reports, crops, manifests, and review reports
+- mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
 
 These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
 
@@ -197,7 +217,47 @@ Important boundary of this milestone:
 
 - this is a strong `text-native overlay prototype`
 - it is not yet the final production reconstruction engine
-- OCR and text-inside-image handling are still separate future work
+- OCR and text-inside-image handling are now explored in a separate experimental workflow, not in the production overlay path
+
+## Experimental OCR Workflow
+
+The OCR branch is intentionally separate from the stabilized native-text overlay path.
+
+It currently supports:
+
+- detecting image blocks as OCR candidates during PyMuPDF extraction
+- cropping candidate image regions to PNG debug files
+- running OCR through Tesseract or a mock backend
+- reviewing OCR quality and suspicious characters
+- combining native text and OCR text into a fusion plan
+- translating mixed native/OCR segments
+- building a mixed replacement plan with explicit strategies
+- recommending whether OCR output should remain a side annotation or become a future image-overlay candidate
+- rendering a diagnostic PDF that applies native replacements and annotates pending OCR regions
+
+The one-command workflow is:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
+```
+
+Useful outputs include:
+
+- `data/debug/*_ocr_dry_run_manifest.json`
+- `data/debug/*_ocr_dry_run_page_*_ocr_*.png`
+- `data/debug/*_fusion_translation_preview.txt`
+- `data/debug/*_fusion_replacement_plan.json`
+- `data/debug/*_fusion_replacement_plan.txt`
+- `data/debug/*_ocr_overlay_strategy.json`
+- `data/debug/*_ocr_overlay_strategy.txt`
+- `data/debug/*_fusion_overlay_diagnostics.pdf`
+
+Current OCR boundary:
+
+- OCR text can be extracted, reviewed, translated, and included in diagnostic artifacts
+- native text replacements can still be previewed through the overlay path
+- OCR regions are not yet rewritten inside the scanned image itself
+- long OCR translations are currently recommended as side annotations when they do not fit safely into the source image region
 
 ## Test Inputs
 
@@ -207,6 +267,7 @@ Synthetic and real test PDFs currently used:
 - `simple-fr.pdf`
 - `scientifique-mixte.pdf`
 - `layout-tricky.pdf`
+- `supportpourocr01.pdf`
 
 Synthetic PDFs can be regenerated with:
 
@@ -242,8 +303,8 @@ This is intentional:
 
 - local model output can still be inconsistent on difficult blocks
 - some longer regions still need deterministic fallbacks or glossary help
-- OCR is not implemented yet
-- diagram text embedded in images is not handled yet
+- OCR is experimental and debug-first, not production recomposition
+- diagram text embedded in images is not yet reconstructed in-place
 - formula-heavy scientific notation still needs dedicated logic
 - current heuristics are useful, but not final
 
@@ -253,13 +314,13 @@ Short term:
 
 1. keep the local v1 stable
 2. continue validating overlay generalization on new representative pages
-3. formalize the current overlay milestone for transfer
+3. validate the experimental OCR workflow on more hybrid/scanned fixtures
 
 Medium term:
 
 1. move to a stronger runtime and model stack
 2. reactivate and validate richer contextual grouping
-3. add a separate OCR branch for image-based text
+3. decide the OCR rendering strategy: side annotations, image-region overlay, or deeper image reconstruction
 
 Long term:
 
