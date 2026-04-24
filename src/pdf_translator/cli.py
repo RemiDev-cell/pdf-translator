@@ -40,7 +40,6 @@ from pdf_translator.ocr.debug import (
     ocr_overlay_strategy_report_to_text,
     ocr_review_report_to_text,
     render_fusion_overlay_diagnostics,
-    run_ocr_debug_pipeline,
     write_fusion_replacement_plan,
     write_fusion_overlay_diagnostics_summary,
     write_fusion_translation_preview_report,
@@ -50,6 +49,7 @@ from pdf_translator.ocr.debug import (
     write_ocr_overlay_strategy_report,
     write_ocr_review_report,
 )
+from pdf_translator.ocr.experiment import run_ocr_experiment
 from pdf_translator.extract.pymupdf_extract import extract_document
 from pdf_translator.pipeline import run_extract_only
 from pdf_translator.routing import (
@@ -569,106 +569,36 @@ def ocr_experiment(
     configure_logging()
     selected_pages = _parse_pages_arg(pages) if pages else None
     document = extract_document(pdf_path)
-    document_ir = annotate_repeated_blocks(document.model_dump())
-    page_numbers = selected_pages or [page["page_number"] for page in document_ir.get("pages", [])]
-    stem = pdf_path.stem
-
-    overlay_ready = build_overlay_ready_report(document_ir, page_numbers)
-    ocr_candidate_report = build_ocr_candidate_report(document_ir, selected_pages)
-    ocr_candidate_json, ocr_candidate_text = write_ocr_candidate_report(
-        ocr_candidate_report,
-        settings.debug_dir,
-        f"{stem}_ocr_dry_run",
-    )
-    manifest_path, crop_paths = run_ocr_debug_pipeline(
+    result = run_ocr_experiment(
         pdf_path=pdf_path,
-        report=ocr_candidate_report,
+        document_ir=document.model_dump(),
         output_dir=settings.debug_dir,
-        stem=f"{stem}_ocr_dry_run",
+        translate_text_fn=translate_text,
+        selected_pages=selected_pages,
         backend=backend,
     )
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ocr_review = build_ocr_review_report(manifest)
-    ocr_review_json, ocr_review_text = write_ocr_review_report(
-        ocr_review,
-        settings.debug_dir,
-        f"{stem}_ocr_dry_run_review",
-    )
-
-    fusion_review_report = build_native_ocr_fusion_report(overlay_ready, ocr_review)
-    fusion_review_json, fusion_review_text = write_native_ocr_fusion_report(
-        fusion_review_report,
-        settings.debug_dir,
-        f"{stem}_fusion_review",
-    )
-
-    fusion_plan_data = build_native_ocr_fusion_plan(overlay_ready, ocr_review)
-    fusion_plan_json, fusion_plan_text = write_native_ocr_fusion_plan(
-        fusion_plan_data,
-        settings.debug_dir,
-        f"{stem}_fusion_plan",
-    )
-
-    def _translate_segment(text: str) -> str:
-        return translate_text(text)
-
-    fusion_translation_preview_data = build_fusion_translation_preview_report(
-        fusion_plan_data,
-        _translate_segment,
-    )
-    fusion_translation_json, fusion_translation_text = write_fusion_translation_preview_report(
-        fusion_translation_preview_data,
-        settings.debug_dir,
-        f"{stem}_fusion_translation_preview",
-    )
-
-    fusion_replacement_plan_data = build_fusion_replacement_plan(fusion_translation_preview_data)
-    fusion_replacement_json, fusion_replacement_text = write_fusion_replacement_plan(
-        fusion_replacement_plan_data,
-        settings.debug_dir,
-        f"{stem}_fusion_replacement_plan",
-    )
-
-    ocr_strategy_report = build_ocr_overlay_strategy_report(fusion_replacement_plan_data)
-    ocr_strategy_json, ocr_strategy_text = write_ocr_overlay_strategy_report(
-        ocr_strategy_report,
-        settings.debug_dir,
-        f"{stem}_ocr_overlay_strategy",
-    )
-
-    diagnostics_pdf, diagnostics_summary, diagnostic_images = render_fusion_overlay_diagnostics(
-        pdf_path=pdf_path,
-        fusion_replacement_plan=fusion_replacement_plan_data,
-        output_dir=settings.debug_dir,
-        stem=f"{stem}_fusion_overlay_diagnostics",
-    )
-    diagnostics_summary_path = write_fusion_overlay_diagnostics_summary(
-        diagnostics_summary,
-        settings.debug_dir,
-        f"{stem}_fusion_overlay_diagnostics",
-    )
+    paths = result["paths"]
 
     print("[bold]OCR experiment complete[/bold]")
-    print(ocr_candidate_report_to_text(ocr_candidate_report))
-    print(ocr_review_report_to_text(ocr_review))
-    print(native_ocr_fusion_plan_to_text(fusion_plan_data))
-    print(fusion_replacement_plan_to_text(fusion_replacement_plan_data))
-    print(ocr_overlay_strategy_report_to_text(ocr_strategy_report))
-    print(fusion_overlay_diagnostics_summary_to_text(diagnostics_summary))
-    print(f"[green]OCR candidate report:[/green] {ocr_candidate_json} / {ocr_candidate_text}")
-    print(f"[green]OCR manifest:[/green] {manifest_path}")
-    print(f"[green]OCR review:[/green] {ocr_review_json} / {ocr_review_text}")
-    print(f"[green]Fusion review:[/green] {fusion_review_json} / {fusion_review_text}")
-    print(f"[green]Fusion plan:[/green] {fusion_plan_json} / {fusion_plan_text}")
-    print(f"[green]Fusion translation preview:[/green] {fusion_translation_json} / {fusion_translation_text}")
-    print(f"[green]Fusion replacement plan:[/green] {fusion_replacement_json} / {fusion_replacement_text}")
-    print(f"[green]OCR overlay strategy:[/green] {ocr_strategy_json} / {ocr_strategy_text}")
-    print(f"[green]Fusion overlay diagnostics:[/green] {diagnostics_pdf} / {diagnostics_summary_path}")
-    if crop_paths:
-        print(f"[green]OCR crops generated:[/green] {len(crop_paths)}")
-    if diagnostic_images:
-        print(f"[green]Diagnostic images generated:[/green] {len(diagnostic_images)}")
+    print(ocr_candidate_report_to_text(result["ocr_candidate_report"]))
+    print(ocr_review_report_to_text(result["ocr_review"]))
+    print(native_ocr_fusion_plan_to_text(result["fusion_plan"]))
+    print(fusion_replacement_plan_to_text(result["fusion_replacement_plan"]))
+    print(ocr_overlay_strategy_report_to_text(result["ocr_strategy_report"]))
+    print(fusion_overlay_diagnostics_summary_to_text(result["diagnostics_summary"]))
+    print(f"[green]OCR candidate report:[/green] {paths['ocr_candidate_json']} / {paths['ocr_candidate_text']}")
+    print(f"[green]OCR manifest:[/green] {paths['manifest']}")
+    print(f"[green]OCR review:[/green] {paths['ocr_review_json']} / {paths['ocr_review_text']}")
+    print(f"[green]Fusion review:[/green] {paths['fusion_review_json']} / {paths['fusion_review_text']}")
+    print(f"[green]Fusion plan:[/green] {paths['fusion_plan_json']} / {paths['fusion_plan_text']}")
+    print(f"[green]Fusion translation preview:[/green] {paths['fusion_translation_json']} / {paths['fusion_translation_text']}")
+    print(f"[green]Fusion replacement plan:[/green] {paths['fusion_replacement_json']} / {paths['fusion_replacement_text']}")
+    print(f"[green]OCR overlay strategy:[/green] {paths['ocr_strategy_json']} / {paths['ocr_strategy_text']}")
+    print(f"[green]Fusion overlay diagnostics:[/green] {paths['diagnostics_pdf']} / {paths['diagnostics_summary']}")
+    if paths["crop_paths"]:
+        print(f"[green]OCR crops generated:[/green] {len(paths['crop_paths'])}")
+    if paths["diagnostic_images"]:
+        print(f"[green]Diagnostic images generated:[/green] {len(paths['diagnostic_images'])}")
 
 
 
