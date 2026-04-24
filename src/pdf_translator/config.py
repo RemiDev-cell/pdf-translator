@@ -25,5 +25,8 @@ class Settings:
     batch_max_segments: int = int(os.getenv("PDF_TRANSLATOR_BATCH_MAX_SEGMENTS", "2"))
     batch_max_chars: int = int(os.getenv("PDF_TRANSLATOR_BATCH_MAX_CHARS", "800"))
 
+    ocr_backend: str = os.getenv("PDF_TRANSLATOR_OCR_BACKEND", "auto")
+    ocr_tesseract_bin: str = os.getenv("PDF_TRANSLATOR_OCR_TESSERACT_BIN", "tesseract")
+
 
 settings = Settings()

@@ -8,6 +8,7 @@ from pdf_translator.extract.classify_pdf import classify_pdf
 from pdf_translator.models import (
     BoundingBox,
     DocumentModel,
+    OcrCandidate,
     PageModel,
     TextBlock,
     TextLine,
@@ -44,8 +45,28 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
         )
 
         block_index = 0
+        ocr_candidate_index = 0
+        page_area = max(1.0, float(page.rect.width) * float(page.rect.height))
         for block in page_dict.get("blocks", []):
             block_type = block.get("type", -1)
+
+            if block_type == 1:
+                bbox = _bbox_from_sequence(block["bbox"])
+                width = max(0.0, bbox.x1 - bbox.x0)
+                height = max(0.0, bbox.y1 - bbox.y0)
+                area_ratio = (width * height) / page_area
+                page_model.ocr_candidates.append(
+                    OcrCandidate(
+                        page_number=page_number,
+                        candidate_index=ocr_candidate_index,
+                        bbox=bbox,
+                        width=width,
+                        height=height,
+                        area_ratio=area_ratio,
+                    )
+                )
+                ocr_candidate_index += 1
+                continue
 
             if block_type != 0:
                 continue
@@ -68,6 +89,7 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                             font=span.get("font"),
                             size=float(span["size"]) if span.get("size") is not None else None,
                             flags=span.get("flags"),
+                            color=span.get("color"),
                             bbox=_bbox_from_sequence(span["bbox"]),
                         )
                     )

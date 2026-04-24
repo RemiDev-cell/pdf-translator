@@ -27,6 +27,7 @@ class TextSpan(BaseModel):
     font: Optional[str] = None
     size: Optional[float] = None
     flags: Optional[int] = None
+    color: Optional[int] = None
     bbox: BoundingBox
 
 
@@ -53,11 +54,23 @@ class TextBlock(BaseModel):
     lines: list[TextLine] = Field(default_factory=list)
 
 
+class OcrCandidate(BaseModel):
+    page_number: int
+    candidate_index: int
+    source_block_type: BlockType = "image"
+    bbox: BoundingBox
+    width: float
+    height: float
+    area_ratio: float = 0.0
+    reason: str = "image_block"
+
+
 class PageModel(BaseModel):
     page_number: int
     width: float
     height: float
     text_blocks: list[TextBlock] = Field(default_factory=list)
+    ocr_candidates: list[OcrCandidate] = Field(default_factory=list)
     image_count: int = 0
     raw_text: str = ""
     block_count: int = 0
