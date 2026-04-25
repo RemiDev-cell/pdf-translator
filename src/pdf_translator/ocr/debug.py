@@ -1146,6 +1146,283 @@ def _format_ocr_diagnostic_note(
     )
 
 
+def _split_text_to_line_count(text: str, line_count: int) -> list[str]:
+    normalized = " ".join(text.split())
+    if line_count <= 0:
+        return []
+    if not normalized:
+        return [""] * line_count
+
+    words = normalized.split()
+    lines: list[str] = []
+    current_words: list[str] = []
+    target_chars = max(1, len(normalized) / line_count)
+
+    for word in words:
+        remaining_lines = line_count - len(lines)
+        remaining_words = len(words) - sum(len(line.split()) for line in lines) - len(current_words)
+        if (
+            current_words
+            and len(lines) < line_count - 1
+            and len(" ".join(current_words + [word])) > target_chars
+            and remaining_words >= remaining_lines
+        ):
+            lines.append(" ".join(current_words))
+            current_words = [word]
+            continue
+        current_words.append(word)
+
+    if current_words:
+        lines.append(" ".join(current_words))
+
+    while len(lines) < line_count:
+        lines.append("")
+    return lines[:line_count]
+
+
+def _split_text_by_line_budgets(text: str, line_budgets: list[int]) -> list[str]:
+    normalized = " ".join(text.split())
+    if not line_budgets:
+        return []
+    if not normalized:
+        return [""] * len(line_budgets)
+
+    total_budget = sum(max(1, budget) for budget in line_budgets)
+    words = normalized.split()
+    lines: list[str] = []
+    word_index = 0
+
+    for line_index, budget in enumerate(line_budgets):
+        remaining_lines = len(line_budgets) - line_index
+        if remaining_lines == 1:
+            lines.append(" ".join(words[word_index:]))
+            break
+
+        target_chars = max(1, len(normalized) * max(1, budget) / total_budget)
+        current_words: list[str] = []
+        while word_index < len(words):
+            next_words = current_words + [words[word_index]]
+            next_text = " ".join(next_words)
+            remaining_words_after_next = len(words) - word_index - 1
+            if (
+                current_words
+                and len(next_text) > target_chars
+                and remaining_words_after_next >= remaining_lines - 1
+            ):
+                break
+            current_words = next_words
+            word_index += 1
+
+        lines.append(" ".join(current_words))
+
+    while len(lines) < len(line_budgets):
+        lines.append("")
+    return lines[: len(line_budgets)]
+
+
+def _is_ocr_ui_line(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+
+    # Only remove lines that look like form controls, not normal prose.
+    radio_like_prefixes = ("o ", "0 ", "® ", "☐ ", "☑ ")
+    if normalized.startswith(radio_like_prefixes) and len(normalized) <= 140:
+        return True
+
+    exact_ui_phrases = (
+        "generate lorem ipsum",
+        "générer du lorem ipsum",
+        "generer du lorem ipsum",
+    )
+    if normalized in exact_ui_phrases:
+        return True
+
+    return False
+
+
+def _clean_ocr_overlay_text(text: str) -> str:
+    cleaned_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
+            continue
+        if _is_ocr_ui_line(stripped):
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleaned or text.strip()
+
+
+def _ocr_layout_render_lines(
+    replacement: dict[str, Any],
+    line_count: int,
+    ocr_layout: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
+    source_text = replacement.get("source_text", "")
+    if not translated_text.strip():
+        return [line.strip() for line in source_text.splitlines() if line.strip()][:line_count]
+
+    line_budgets = [
+        max(1, len(str(layout_line.get("text", "")).strip()))
+        for layout_line in (ocr_layout or [])
+    ]
+
+    translated_paragraphs = [
+        " ".join(paragraph.split())
+        for paragraph in translated_text.split("\n\n")
+        if paragraph.strip()
+    ]
+    source_paragraphs = [
+        [line.strip() for line in paragraph.splitlines() if line.strip()]
+        for paragraph in source_text.split("\n\n")
+        if paragraph.strip()
+    ]
+
+    if translated_paragraphs and len(translated_paragraphs) == len(source_paragraphs):
+        lines: list[str] = []
+        for paragraph_index, source_lines in enumerate(source_paragraphs):
+            lines.extend(
+                _split_text_to_line_count(
+                    translated_paragraphs[paragraph_index],
+                    len(source_lines),
+                )
+            )
+        if len(lines) == line_count:
+            return lines
+
+    explicit_lines = [line.strip() for line in translated_text.splitlines() if line.strip()]
+    if len(explicit_lines) == line_count:
+        return explicit_lines
+
+    if len(line_budgets) == line_count:
+        return _split_text_by_line_budgets(translated_text, line_budgets)
+
+    return _split_text_to_line_count(translated_text, line_count)
+
+
+def _group_ocr_layout_blocks(ocr_layout: list[dict]) -> list[list[dict]]:
+    blocks = {}
+    for line in ocr_layout:
+        key = (line.get("block_num"), line.get("par_num"))
+        blocks.setdefault(key, []).append(line)
+
+    return list(blocks.values())
+
+
+def _compute_block_bbox(block_lines, rect, crop_width_px, crop_height_px):
+    x0s, y0s, x1s, y1s = [], [], [], []
+
+    for l in block_lines:
+        b = l.get("bbox_px") or {}
+        try:
+            x0s.append(float(b.get("x0", 0)))
+            y0s.append(float(b.get("y0", 0)))
+            x1s.append(float(b.get("x1", 0)))
+            y1s.append(float(b.get("y1", 0)))
+        except:
+            continue
+
+    if not x0s:
+        return None
+
+    return fitz.Rect(
+        rect.x0 + (min(x0s) / crop_width_px) * rect.width,
+        rect.y0 + (min(y0s) / crop_height_px) * rect.height,
+        rect.x0 + (max(x1s) / crop_width_px) * rect.width,
+        rect.y0 + (max(y1s) / crop_height_px) * rect.height,
+    ) & rect
+
+
+def _render_ocr_layout_overlay(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    replacement: dict[str, Any],
+) -> bool:
+    ocr_layout = replacement.get("ocr_layout") or []
+    if not ocr_layout:
+        return False
+
+    crop_width_px = rect.width * DEFAULT_OCR_ZOOM
+    crop_height_px = rect.height * DEFAULT_OCR_ZOOM
+    if crop_width_px <= 0 or crop_height_px <= 0:
+        return False
+
+    blocks = _group_ocr_layout_blocks(ocr_layout)
+
+    # Heuristic: if many lines → render as blocks
+    if len(ocr_layout) >= 6:
+        translated_text = replacement.get("translated_text", "")
+
+        for block in blocks:
+            block_rect = _compute_block_bbox(block, rect, crop_width_px, crop_height_px)
+            if not block_rect or block_rect.is_empty:
+                continue
+
+            approx_line_count = max(1, len(block))
+            font_size = min(11, max(6, block_rect.height / (approx_line_count * 1.3)))
+
+            page.insert_textbox(
+                block_rect + (2, 2, -2, -2),
+                translated_text,
+                fontsize=font_size,
+                fontname="helv",
+                color=(0, 0, 0),
+            )
+
+        return True
+
+    render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
+
+    rendered_count = 0
+    for index, layout_line in enumerate(ocr_layout):
+        bbox_px = layout_line.get("bbox_px") or {}
+        try:
+            x0 = float(bbox_px.get("x0", 0.0))
+            y0 = float(bbox_px.get("y0", 0.0))
+            x1 = float(bbox_px.get("x1", 0.0))
+            y1 = float(bbox_px.get("y1", 0.0))
+        except (TypeError, ValueError):
+            continue
+
+        if x1 <= x0 or y1 <= y0:
+            continue
+
+        line_rect = fitz.Rect(
+            rect.x0 + (x0 / crop_width_px) * rect.width,
+            rect.y0 + (y0 / crop_height_px) * rect.height,
+            rect.x0 + (x1 / crop_width_px) * rect.width,
+            rect.y0 + (y1 / crop_height_px) * rect.height,
+        ) & rect
+        if line_rect.is_empty:
+            continue
+
+        line_text = render_lines[index].strip() if index < len(render_lines) else ""
+        if not line_text:
+            line_text = str(layout_line.get("text", "")).strip()
+        if not line_text:
+            continue
+
+        font_size = max(5.0, min(12.5, line_rect.height * 0.95))
+        text_width = fitz.get_text_length(line_text, fontname="helv", fontsize=font_size)
+        if text_width > line_rect.width and text_width > 0:
+            font_size = max(4.0, font_size * (line_rect.width / text_width))
+
+        page.insert_text(
+            fitz.Point(line_rect.x0, line_rect.y1),
+            line_text,
+            fontsize=font_size,
+            fontname="helv",
+            color=(0, 0, 0),
+        )
+        rendered_count += 1
+
+    return rendered_count > 0
+
+
 def render_fusion_overlay_diagnostics(
     pdf_path: Path,
     fusion_replacement_plan: dict[str, Any],
@@ -1218,16 +1495,27 @@ def render_fusion_overlay_diagnostics(
 
                 if confidence in {"high", "medium"}:
                     page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-                    translated_text = replacement.get("translated_text", "")
-                    approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
-                    font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
-                    page.insert_textbox(
-                        rect + (2, 2, -2, -2),
-                        translated_text,
-                        fontsize=font_size,
-                        fontname="helv",
-                        color=(0, 0, 0),
-                    )
+                    translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
+
+                    rendered_with_layout = False
+                    if recommendation == "image_overlay_candidate":
+                        rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
+
+                    if not rendered_with_layout:
+                        # Conservative OCR block fitting: avoid silent truncation in dense translated OCR regions.
+                        text_box = rect + (4, 4, -4, -4)
+                        approx_line_count = max(
+                            1,
+                            translated_text.count("\n") + len(translated_text) // 65,
+                        )
+                        font_size = min(8.0, max(4.5, text_box.height / (approx_line_count * 1.45)))
+                        page.insert_textbox(
+                            text_box,
+                            translated_text,
+                            fontsize=font_size,
+                            fontname="helv",
+                            color=(0, 0, 0),
+                        )
                     page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
                     ocr_annotated += 1
                     total_ocr_annotated += 1
