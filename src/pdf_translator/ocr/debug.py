@@ -576,6 +576,88 @@ def write_native_ocr_fusion_report(
 
 
 
+
+def _bbox_float(region: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float((region.get("bbox") or {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _order_native_regions_for_reading(native_regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order native regions conservatively for reading.
+
+    For simple pages, keep the existing y/x order. For clear two-column pages,
+    read header first, then left column top-to-bottom, then right column
+    top-to-bottom, then centered/side-note regions near the bottom.
+    """
+    if len(native_regions) < 8:
+        return list(native_regions)
+
+    regions = list(native_regions)
+    x0_values = sorted(round(_bbox_float(region, "x0"), 1) for region in regions)
+
+    unique_x0 = []
+    for value in x0_values:
+        if not unique_x0 or abs(value - unique_x0[-1]) > 8:
+            unique_x0.append(value)
+
+    if len(unique_x0) < 2:
+        return sorted(regions, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+
+    # Detect the common two-column case: a left cluster and a right cluster
+    # separated by a large gap.
+    gaps = [
+        (unique_x0[index + 1] - unique_x0[index], unique_x0[index], unique_x0[index + 1])
+        for index in range(len(unique_x0) - 1)
+    ]
+    large_gaps = [gap for gap in gaps if gap[0] >= 80]
+
+    if not large_gaps:
+        return sorted(regions, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+
+    # Prefer the gap before the right text column. In this benchmark-like layout,
+    # the right column starts after the last large x cluster.
+    _, left_edge, right_edge = sorted(large_gaps, key=lambda item: item[2])[-1]
+    column_threshold = (left_edge + right_edge) / 2.0
+
+    page_top = min(_bbox_float(region, "y0") for region in regions)
+    page_bottom = max(_bbox_float(region, "y1") for region in regions)
+    page_height = max(1.0, page_bottom - page_top)
+
+    headers: list[dict[str, Any]] = []
+    left_column: list[dict[str, Any]] = []
+    right_column: list[dict[str, Any]] = []
+    footnotes: list[dict[str, Any]] = []
+
+    for region in regions:
+        x0 = _bbox_float(region, "x0")
+        x1 = _bbox_float(region, "x1")
+        y0 = _bbox_float(region, "y0")
+        width = x1 - x0
+
+        # Full-width or upper title/objective blocks should remain first.
+        if y0 <= page_top + page_height * 0.10 and width >= 220:
+            headers.append(region)
+            continue
+
+        # Bottom centered notes should not be interleaved with columns.
+        if y0 >= page_top + page_height * 0.82:
+            footnotes.append(region)
+            continue
+
+        if x0 < column_threshold:
+            left_column.append(region)
+        else:
+            right_column.append(region)
+
+    return (
+        sorted(headers, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+        + sorted(left_column, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+        + sorted(right_column, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+        + sorted(footnotes, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+    )
+
 def build_native_ocr_fusion_plan(
     overlay_ready_report: dict[str, Any],
     ocr_review_report: dict[str, Any],
@@ -588,7 +670,7 @@ def build_native_ocr_fusion_plan(
     for page in fusion_report.get("pages", []):
         segments: list[dict[str, Any]] = []
 
-        for native_region in page.get("native_regions", []):
+        for native_region in _order_native_regions_for_reading(page.get("native_regions", [])):
             segment = {
                 "segment_id": f"P{page['page_number']}N{native_region['block_index']}",
                 "source_kind": "native",
