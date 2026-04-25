@@ -604,7 +604,7 @@ def build_native_ocr_fusion_plan(
 
         for ocr_region in page.get("ocr_regions", []):
             should_translate = ocr_region.get("ocr_status") == "ok" and ocr_region.get("quality") in {"usable", "review"}
-            ocr_text = ocr_region.get("text", ocr_region.get("preview", ""))
+            ocr_text = _clean_ocr_overlay_text(ocr_region.get("text", ocr_region.get("preview", "")))
             rendering_segments = [
                 {
                     "text": ocr_text,
