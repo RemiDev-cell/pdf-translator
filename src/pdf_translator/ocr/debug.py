@@ -154,6 +154,7 @@ def run_ocr_debug_pipeline(
             candidate["ocr_backend"] = ocr_result["backend"]
             candidate["ocr_status"] = ocr_result["status"]
             candidate["ocr_text"] = ocr_result["text"]
+            candidate["ocr_layout"] = ocr_result.get("layout", [])
             candidate["ocr_detail"] = ocr_result["detail"]
 
     manifest_path.write_text(
@@ -223,6 +224,7 @@ def build_ocr_review_report(manifest: dict[str, Any]) -> dict[str, Any]:
                     "suspicious_char_count": _count_suspicious_chars(normalized_text),
                     "text": normalized_text,
                     "preview": normalized_text[:240],
+                    "ocr_layout": candidate.get("ocr_layout", []),
                     "detail": candidate.get("ocr_detail", ""),
                     "image_path": candidate.get("image_path", ""),
                     "bbox": candidate.get("bbox", {}),
@@ -436,6 +438,8 @@ def build_native_ocr_fusion_report(
                     "bbox": region.get("bbox", {}),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
+                    "ocr_layout": region.get("ocr_layout", []),
+                    "ocr_layout": region.get("ocr_layout", []),
                 }
             )
 
@@ -592,6 +596,7 @@ def build_native_ocr_fusion_plan(
                     "ocr_status": ocr_region.get("ocr_status", "missing"),
                     "quality": ocr_region.get("quality", "unknown"),
                     "bbox": ocr_region.get("bbox", {}),
+                    "ocr_layout": ocr_region.get("ocr_layout", []),
                     "translate": should_translate,
                     "ocr_parent_candidate_index": ocr_region.get("candidate_index"),
                     "ocr_segment_index": ocr_segment_index,
@@ -723,6 +728,7 @@ def build_fusion_translation_preview_report(
                     "translation_chunks": translation_chunks,
                     "role": segment.get("role", "content"),
                     "bbox": segment.get("bbox", {}),
+                    "ocr_layout": segment.get("ocr_layout", []),
                 }
             )
 
@@ -1016,6 +1022,7 @@ def build_fusion_replacement_plan(
                     "source_text": source_text,
                     "translated_text": translated_text,
                     "bbox": bbox,
+                    "ocr_layout": segment.get("ocr_layout", []),
                     "status": segment.get("status", "missing"),
                     "source_length": source_len,
                     "translated_length": translated_len,
