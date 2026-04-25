@@ -75,6 +75,12 @@ def test_run_ocr_debug_pipeline_writes_manifest_pngs_and_mock_ocr(tmp_path: Path
 
 
 def test_build_ocr_review_report_summarizes_manifest(tmp_path: Path) -> None:
+    long_ocr_text = (
+        "Bonjour ceci est un texte OCR relativement long pour etre utilisable. "
+        "Cette seconde phrase depasse volontairement les limites habituelles "
+        "du champ preview afin de verifier que le texte complet reste disponible "
+        "pour les etapes de fusion et de traduction."
+    )
     manifest = {
         "source_path": "data/input/sample.pdf",
         "selected_pages": [1],
@@ -87,7 +93,7 @@ def test_build_ocr_review_report_summarizes_manifest(tmp_path: Path) -> None:
                         "candidate_index": 0,
                         "ocr_backend": "tesseract",
                         "ocr_status": "ok",
-                        "ocr_text": "Bonjour ceci est un texte OCR relativement long pour etre utilisable.",
+                        "ocr_text": long_ocr_text,
                         "ocr_detail": "tesseract cli output",
                         "image_path": "data/debug/sample.png",
                     },
@@ -112,6 +118,7 @@ def test_build_ocr_review_report_summarizes_manifest(tmp_path: Path) -> None:
     assert report['status_summary'] == {'ok': 1, 'unavailable': 1}
     assert report['quality_summary']['unavailable'] == 1
     assert report['pages'][0]['regions'][0]['quality'] in {'usable', 'review'}
+    assert report['pages'][0]['regions'][0]['text'] == long_ocr_text
     assert 'Status summary:' in text
     assert 'OCR0 [ok/' in text
     assert json_path.exists()
@@ -120,6 +127,7 @@ def test_build_ocr_review_report_summarizes_manifest(tmp_path: Path) -> None:
 
 
 def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: Path) -> None:
+    full_ocr_text = "Texte OCR de la zone image pour comparaison. Phrase complete conservee pour traduction."
     overlay_ready_report = {
         "selected_pages": [1],
         "pages": [
@@ -148,6 +156,7 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
                         "quality": "usable",
                         "ocr_backend": "tesseract",
                         "word_count": 12,
+                        "text": full_ocr_text,
                         "preview": "Texte OCR de la zone image pour comparaison.",
                     }
                 ],
@@ -164,6 +173,7 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
     assert report['total_ocr_regions'] == 1
     assert report['pages'][0]['native_regions'][0]['block_index'] == 2
     assert report['pages'][0]['ocr_regions'][0]['ocr_backend'] == 'tesseract'
+    assert report['pages'][0]['ocr_regions'][0]['text'] == full_ocr_text
     assert 'native B2' in text
     assert 'ocr OCR0 [ok/usable]' in text
     assert json_path.exists()
@@ -172,6 +182,7 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
 
 
 def test_build_native_ocr_fusion_plan_marks_translatable_segments(tmp_path: Path) -> None:
+    full_ocr_text = "Texte OCR exploitable avec une suite qui ne doit pas etre tronquee."
     overlay_ready_report = {
         "selected_pages": [1],
         "pages": [
@@ -200,6 +211,7 @@ def test_build_native_ocr_fusion_plan_marks_translatable_segments(tmp_path: Path
                         "quality": "usable",
                         "ocr_backend": "tesseract",
                         "word_count": 12,
+                        "text": full_ocr_text,
                         "preview": "Texte OCR exploitable.",
                     },
                     {
@@ -223,6 +235,8 @@ def test_build_native_ocr_fusion_plan_marks_translatable_segments(tmp_path: Path
     assert plan['translatable_segments'] == 2
     assert plan['pages'][0]['segments'][0]['source_kind'] == 'native'
     assert plan['pages'][0]['segments'][1]['source_kind'] == 'ocr'
+    assert plan['pages'][0]['segments'][1]['text'] == full_ocr_text
+    assert plan['pages'][0]['segments'][1]['preview'] == 'Texte OCR exploitable.'
     assert plan['pages'][0]['segments'][1]['translate'] is True
     assert plan['pages'][0]['segments'][2]['translate'] is False
     assert 'P1O0 [ocr/translate]' in text

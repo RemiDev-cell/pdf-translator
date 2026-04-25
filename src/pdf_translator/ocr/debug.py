@@ -221,6 +221,7 @@ def build_ocr_review_report(manifest: dict[str, Any]) -> dict[str, Any]:
                     "char_count": len(normalized_text),
                     "line_count": len([line for line in normalized_text.splitlines() if line.strip()]),
                     "suspicious_char_count": _count_suspicious_chars(normalized_text),
+                    "text": normalized_text,
                     "preview": normalized_text[:240],
                     "detail": candidate.get("ocr_detail", ""),
                     "image_path": candidate.get("image_path", ""),
@@ -345,6 +346,7 @@ def build_native_ocr_fusion_report(
                     "ocr_backend": region.get("ocr_backend", "unknown"),
                     "word_count": region.get("word_count", 0),
                     "bbox": region.get("bbox", {}),
+                    "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                 }
             )
@@ -377,6 +379,7 @@ def build_native_ocr_fusion_report(
                     "ocr_backend": region.get("ocr_backend", "unknown"),
                     "word_count": region.get("word_count", 0),
                     "bbox": region.get("bbox", {}),
+                    "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                 }
             )
@@ -484,7 +487,8 @@ def build_native_ocr_fusion_plan(
                 "source_kind": "ocr",
                 "source_ref": f"ocr:{ocr_region['candidate_index']}",
                 "role": "ocr_region",
-                "text": ocr_region.get("preview", ""),
+                "text": ocr_region.get("text", ocr_region.get("preview", "")),
+                "preview": ocr_region.get("preview", ""),
                 "ocr_backend": ocr_region.get("ocr_backend", "unknown"),
                 "ocr_status": ocr_region.get("ocr_status", "missing"),
                 "quality": ocr_region.get("quality", "unknown"),
