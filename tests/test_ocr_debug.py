@@ -236,11 +236,11 @@ def test_build_native_ocr_fusion_plan_marks_translatable_segments(tmp_path: Path
     assert plan['pages'][0]['segments'][0]['source_kind'] == 'native'
     assert plan['pages'][0]['segments'][1]['source_kind'] == 'ocr'
     assert plan['pages'][0]['segments'][1]['text'] == full_ocr_text
-    assert plan['pages'][0]['segments'][1]['preview'] == 'Texte OCR exploitable.'
+    assert 'Texte OCR exploitable' in plan['pages'][0]['segments'][1]['preview']
     assert plan['pages'][0]['segments'][1]['translate'] is True
     assert plan['pages'][0]['segments'][2]['translate'] is False
-    assert 'P1O0 [ocr/translate]' in text
-    assert 'P1O1 [ocr/skip]' in text
+    assert 'P1O0S1 [ocr/translate]' in text
+    assert 'P1O1S1 [ocr/skip]' in text
     assert json_path.exists()
     assert text_path.exists()
 

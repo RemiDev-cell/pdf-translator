@@ -361,7 +361,38 @@ def _split_ocr_text_for_translation(text: str, max_chars: int = 520) -> list[str
         chunks.append(current)
 
     return chunks
+def _split_ocr_text_for_rendering(text: str, max_chars: int = 180) -> list[dict[str, Any]]:
+    normalized = _normalize_ocr_text(text)
+    if not normalized:
+        return []
 
+    raw_lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    segments: list[dict[str, Any]] = []
+
+    for raw_line in raw_lines:
+        if len(raw_line) <= max_chars:
+            segments.append(
+                {
+                    "text": raw_line,
+                    "segment_role": "ocr_line",
+                    "char_count": len(raw_line),
+                    "word_count": len(raw_line.split()),
+                }
+            )
+            continue
+
+        chunks = _split_long_text_by_words(raw_line, max_chars)
+        for chunk in chunks:
+            segments.append(
+                {
+                    "text": chunk,
+                    "segment_role": "ocr_text_chunk",
+                    "char_count": len(chunk),
+                    "word_count": len(chunk.split()),
+                }
+            )
+
+    return segments
 
 
 def build_native_ocr_fusion_report(
@@ -539,23 +570,42 @@ def build_native_ocr_fusion_plan(
 
         for ocr_region in page.get("ocr_regions", []):
             should_translate = ocr_region.get("ocr_status") == "ok" and ocr_region.get("quality") in {"usable", "review"}
-            segment = {
-                "segment_id": f"P{page['page_number']}O{ocr_region['candidate_index']}",
-                "source_kind": "ocr",
-                "source_ref": f"ocr:{ocr_region['candidate_index']}",
-                "role": "ocr_region",
-                "text": ocr_region.get("text", ocr_region.get("preview", "")),
-                "preview": ocr_region.get("preview", ""),
-                "ocr_backend": ocr_region.get("ocr_backend", "unknown"),
-                "ocr_status": ocr_region.get("ocr_status", "missing"),
-                "quality": ocr_region.get("quality", "unknown"),
-                "bbox": ocr_region.get("bbox", {}),
-                "translate": should_translate,
-            }
-            segments.append(segment)
-            total_segments += 1
-            if should_translate:
-                translatable_segments += 1
+            ocr_text = ocr_region.get("text", ocr_region.get("preview", ""))
+            rendering_segments = _split_ocr_text_for_rendering(ocr_text)
+
+            if not rendering_segments:
+                rendering_segments = [
+                    {
+                        "text": ocr_text,
+                        "segment_role": "ocr_region",
+                        "char_count": len(ocr_text),
+                        "word_count": len(ocr_text.split()),
+                    }
+                ]
+
+            for ocr_segment_index, ocr_segment in enumerate(rendering_segments, start=1):
+                segment = {
+                    "segment_id": f"P{page['page_number']}O{ocr_region['candidate_index']}S{ocr_segment_index}",
+                    "source_kind": "ocr",
+                    "source_ref": f"ocr:{ocr_region['candidate_index']}",
+                    "role": ocr_segment.get("segment_role", "ocr_line"),
+                    "text": ocr_segment.get("text", ""),
+                    "preview": _truncate_preview(ocr_segment.get("text", "")),
+                    "ocr_backend": ocr_region.get("ocr_backend", "unknown"),
+                    "ocr_status": ocr_region.get("ocr_status", "missing"),
+                    "quality": ocr_region.get("quality", "unknown"),
+                    "bbox": ocr_region.get("bbox", {}),
+                    "translate": should_translate,
+                    "ocr_parent_candidate_index": ocr_region.get("candidate_index"),
+                    "ocr_segment_index": ocr_segment_index,
+                    "ocr_segment_count": len(rendering_segments),
+                    "ocr_segment_char_count": ocr_segment.get("char_count", 0),
+                    "ocr_segment_word_count": ocr_segment.get("word_count", 0),
+                }
+                segments.append(segment)
+                total_segments += 1
+                if should_translate:
+                    translatable_segments += 1
 
         page_plans.append(
             {
