@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -676,6 +677,41 @@ def ocr_experiment(
         print(f"[green]Diagnostic images generated:[/green] {len(paths['diagnostic_images'])}")
 
 
+@app.command()
+def document_preview(
+    pdf_path: Path,
+    pages: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> None:
+    """Génère un PDF de revue traduit, lisible et inspectable."""
+    configure_logging()
 
+    selected_pages = _parse_pages_arg(pages) if pages else None
+    document = extract_document(pdf_path)
+
+    result = run_ocr_experiment(
+        pdf_path=pdf_path,
+        document_ir=document.model_dump(),
+        output_dir=settings.debug_dir,
+        translate_text_fn=translate_text,
+        selected_pages=selected_pages,
+        backend=backend,
+    )
+
+    paths = result["paths"]
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+
+    preview_pdf_path = settings.output_dir / f"{pdf_path.stem}_document_preview.pdf"
+    preview_summary_path = settings.output_dir / f"{pdf_path.stem}_document_preview_summary.txt"
+    preview_strategy_path = settings.output_dir / f"{pdf_path.stem}_document_preview_ocr_strategy.txt"
+
+    shutil.copy2(paths["diagnostics_pdf"], preview_pdf_path)
+    shutil.copy2(paths["diagnostics_summary"], preview_summary_path)
+    shutil.copy2(paths["ocr_strategy_text"], preview_strategy_path)
+
+    print("Document preview complete")
+    print(f"Preview PDF: {preview_pdf_path}")
+    print(f"Summary: {preview_summary_path}")
+    print(f"OCR strategy: {preview_strategy_path}")
 if __name__ == "__main__":
     app()
