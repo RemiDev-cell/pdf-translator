@@ -571,17 +571,14 @@ def build_native_ocr_fusion_plan(
         for ocr_region in page.get("ocr_regions", []):
             should_translate = ocr_region.get("ocr_status") == "ok" and ocr_region.get("quality") in {"usable", "review"}
             ocr_text = ocr_region.get("text", ocr_region.get("preview", ""))
-            rendering_segments = _split_ocr_text_for_rendering(ocr_text)
-
-            if not rendering_segments:
-                rendering_segments = [
-                    {
-                        "text": ocr_text,
-                        "segment_role": "ocr_region",
-                        "char_count": len(ocr_text),
-                        "word_count": len(ocr_text.split()),
-                    }
-                ]
+            rendering_segments = [
+                {
+                    "text": ocr_text,
+                    "segment_role": "ocr_region",
+                    "char_count": len(ocr_text),
+                    "word_count": len(ocr_text.split()),
+                }
+            ]
 
             for ocr_segment_index, ocr_segment in enumerate(rendering_segments, start=1):
                 segment = {
@@ -858,10 +855,7 @@ def _choose_ocr_apply_strategy(
     fit_risk: str,
     fit_diagnostics: dict[str, Any],
 ) -> str:
-    source_len = len(source_text.replace("\n", " ").strip())
     translated_len = len(translated_text.replace("\n", " ").strip())
-    source_word_count = len(source_text.split())
-    translated_word_count = len(translated_text.split())
     source_lines = fit_diagnostics.get("source_line_count", 0)
     translated_lines = fit_diagnostics.get("translated_line_count", 0)
     bbox_area = float(fit_diagnostics.get("bbox_area", 0.0))
@@ -871,26 +865,16 @@ def _choose_ocr_apply_strategy(
     if translated_len == 0 or "missing_bbox" in flags or bbox_area <= 0:
         return "ocr_review_required"
 
-    if fit_risk == "high":
-        return "ocr_side_annotation"
-
     if "dense_text_for_region" in flags or translated_density > 18.0:
         return "ocr_side_annotation"
 
-    if "more_translated_lines_than_source" in flags and translated_lines > 2:
-        return "ocr_side_annotation"
-
-    if source_len <= 80 and translated_len <= 110 and source_lines <= 2 and translated_lines <= 2:
+    if translated_len <= 220 and translated_lines <= max(3, source_lines + 1):
         return "ocr_overlay_candidate"
 
-    if (
-        fit_risk == "low"
-        and source_len <= 140
-        and translated_len <= 180
-        and source_word_count <= 24
-        and translated_word_count <= 30
-        and translated_density <= 14.0
-    ):
+    if bbox_area >= 45000 and translated_density <= 14.0 and translated_len <= 900:
+        return "ocr_overlay_candidate"
+
+    if fit_risk in {"low", "medium"} and translated_density <= 14.0:
         return "ocr_overlay_candidate"
 
     return "ocr_side_annotation"
@@ -1097,10 +1081,15 @@ def render_fusion_overlay_diagnostics(
 
             if strategy == "native_overlay_candidate" and status == "translated" and fit_risk in allowed_native_fit_risks:
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                translated_text = replacement.get("translated_text", "")
+
+                approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
+                font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
+
                 page.insert_textbox(
-                    rect,
-                    replacement.get("translated_text", ""),
-                    fontsize=8.5,
+                    rect + (2, 2, -2, -2),
+                    translated_text,
+                    fontsize=font_size,
                     fontname="helv",
                     color=(0, 0, 0),
                 )
@@ -1108,7 +1097,27 @@ def render_fusion_overlay_diagnostics(
                 total_native_applied += 1
                 continue
 
-            if strategy in {"ocr_overlay_candidate", "ocr_side_annotation", "ocr_review_required"}:
+            if strategy == "ocr_overlay_candidate" and status == "translated":
+                recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
+                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
+                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                translated_text = replacement.get("translated_text", "")
+                approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
+                font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
+                page.insert_textbox(
+                    rect + (2, 2, -2, -2),
+                    translated_text,
+                    fontsize=font_size,
+                    fontname="helv",
+                    color=(0, 0, 0),
+                )
+                page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+                ocr_annotated += 1
+                total_ocr_annotated += 1
+                continue
+
+            if strategy in {"ocr_side_annotation", "ocr_review_required"}:
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
