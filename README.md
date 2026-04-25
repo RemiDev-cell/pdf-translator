@@ -176,6 +176,12 @@ Run the experimental OCR workflow on a hybrid or scanned-image PDF:
 ./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
 ```
 
+Try a page-level OCR translation preview without attempting image recomposition:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-page-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract
+```
+
 ## Debug Artifacts
 
 The pipeline writes useful intermediate artifacts under `data/debug/`, including:
@@ -250,6 +256,8 @@ Useful outputs include:
 - `data/debug/*_fusion_replacement_plan.txt`
 - `data/debug/*_ocr_overlay_strategy.json`
 - `data/debug/*_ocr_overlay_strategy.txt`
+- `data/debug/*_ocr_page_translation_preview.json`
+- `data/debug/*_ocr_page_translation_preview.txt`
 - `data/debug/*_fusion_overlay_diagnostics.pdf`
 
 Current OCR boundary:

@@ -665,12 +665,57 @@ def _estimate_fusion_fit_risk(source_text: str, translated_text: str, source_kin
     overflow_ratio = (translated_len / source_len) if source_len else 1.0
 
     if source_kind == "ocr":
-        return "review"
+        if translated_len == 0:
+            return "review"
+        if overflow_ratio > 1.6 or translated_len > 260:
+            return "high"
+        if overflow_ratio > 1.25 or translated_len > 180:
+            return "medium"
+        return "low"
     if overflow_ratio > 1.35:
         return "high"
     if overflow_ratio > 1.1:
         return "medium"
     return "low"
+
+
+def _line_count(text: str) -> int:
+    return len([line for line in text.splitlines() if line.strip()])
+
+
+def _build_fit_diagnostics(
+    source_text: str,
+    translated_text: str,
+    bbox: dict[str, Any],
+) -> dict[str, Any]:
+    source_len = len(source_text.replace("\n", " ").strip())
+    translated_len = len(translated_text.replace("\n", " ").strip())
+    area = _bbox_area(bbox)
+    translated_density = (translated_len / area * 1000.0) if area else 0.0
+    source_line_count = _line_count(source_text)
+    translated_line_count = _line_count(translated_text)
+
+    flags: list[str] = []
+    if area <= 0:
+        flags.append("missing_bbox")
+    if translated_len == 0:
+        flags.append("empty_translation")
+    if source_len and translated_len / source_len > 1.6:
+        flags.append("large_translation_expansion")
+    if translated_len > 260:
+        flags.append("long_translation")
+    if source_line_count and translated_line_count > source_line_count + 1:
+        flags.append("more_translated_lines_than_source")
+    if translated_density > 18.0:
+        flags.append("dense_text_for_region")
+
+    return {
+        "source_line_count": source_line_count,
+        "translated_line_count": translated_line_count,
+        "bbox_area": round(area, 2),
+        "translated_chars_per_1000pt2": round(translated_density, 2),
+        "flags": flags,
+    }
 
 
 def build_fusion_replacement_plan(
@@ -689,6 +734,8 @@ def build_fusion_replacement_plan(
             source_len = len(source_text.replace("\n", " ").strip())
             translated_len = len(translated_text.replace("\n", " ").strip())
             overflow_ratio = (translated_len / source_len) if source_len else 1.0
+            bbox = segment.get("bbox", {})
+            fit_diagnostics = _build_fit_diagnostics(source_text, translated_text, bbox)
 
             if source_kind == "ocr":
                 apply_strategy = "ocr_overlay_pending"
@@ -705,12 +752,13 @@ def build_fusion_replacement_plan(
                     "role": segment.get("role", "content"),
                     "source_text": source_text,
                     "translated_text": translated_text,
-                    "bbox": segment.get("bbox", {}),
+                    "bbox": bbox,
                     "status": segment.get("status", "missing"),
                     "source_length": source_len,
                     "translated_length": translated_len,
                     "overflow_ratio": round(overflow_ratio, 2),
                     "fit_risk": _estimate_fusion_fit_risk(source_text, translated_text, source_kind),
+                    "fit_diagnostics": fit_diagnostics,
                     "apply_strategy": apply_strategy,
                 }
             )
@@ -808,6 +856,25 @@ def _draw_diagnostic_note(
     )
 
 
+def _format_ocr_diagnostic_note(
+    replacement: dict[str, Any],
+    recommendation: str,
+    reasons: list[str],
+) -> str:
+    fit_diagnostics = replacement.get("fit_diagnostics", {})
+    flags = fit_diagnostics.get("flags", [])
+    reason_text = ", ".join(reasons[:2]) if reasons else "review"
+    flag_text = ", ".join(flags[:2]) if flags else "none"
+    return (
+        f"{replacement.get('segment_id')} OCR translation\n"
+        f"recommendation={recommendation}\n"
+        f"risk={replacement.get('fit_risk')} ratio={replacement.get('overflow_ratio', 1.0)}\n"
+        f"reason={reason_text}\n"
+        f"flags={flag_text}\n"
+        f"{_truncate_preview(replacement.get('translated_text', ''), 220)}"
+    )
+
+
 def render_fusion_overlay_diagnostics(
     pdf_path: Path,
     fusion_replacement_plan: dict[str, Any],
@@ -825,6 +892,7 @@ def render_fusion_overlay_diagnostics(
     total_native_applied = 0
     total_ocr_annotated = 0
     total_skipped = 0
+    ocr_recommendation_summary: dict[str, int] = {}
 
     for page_report in fusion_replacement_plan.get("pages", []):
         page_number = int(page_report["page_number"])
@@ -834,6 +902,7 @@ def render_fusion_overlay_diagnostics(
         native_applied = 0
         ocr_annotated = 0
         skipped = 0
+        page_ocr_recommendations: dict[str, int] = {}
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
@@ -861,11 +930,14 @@ def render_fusion_overlay_diagnostics(
                 continue
 
             if strategy == "ocr_overlay_pending":
+                recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
+                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
                 page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
                 page.insert_text(
                     label_point,
-                    f"{replacement.get('segment_id')} OCR pending",
+                    f"{replacement.get('segment_id')} OCR strategy",
                     fontsize=8,
                     fontname="helv",
                     color=(1.0, 0.35, 0.0),
@@ -873,9 +945,7 @@ def render_fusion_overlay_diagnostics(
                 _draw_diagnostic_note(
                     page,
                     rect,
-                    f"{replacement.get('segment_id')} OCR translation\n"
-                    f"risk={fit_risk}\n"
-                    f"{_truncate_preview(replacement.get('translated_text', ''), 260)}",
+                    _format_ocr_diagnostic_note(replacement, recommendation, reasons),
                 )
                 ocr_annotated += 1
                 total_ocr_annotated += 1
@@ -890,6 +960,7 @@ def render_fusion_overlay_diagnostics(
                 "considered_replacements": len(page_report.get("replacements", [])),
                 "native_applied": native_applied,
                 "ocr_annotated": ocr_annotated,
+                "ocr_recommendations": page_ocr_recommendations,
                 "skipped": skipped,
             }
         )
@@ -912,6 +983,7 @@ def render_fusion_overlay_diagnostics(
         "total_considered_replacements": total_considered,
         "total_native_applied": total_native_applied,
         "total_ocr_annotated": total_ocr_annotated,
+        "ocr_recommendation_summary": ocr_recommendation_summary,
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),
         "pages": summary_pages,
@@ -928,6 +1000,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
         f"Total considered replacements: {summary['total_considered_replacements']}",
         f"Total native applied: {summary['total_native_applied']}",
         f"Total OCR annotated: {summary['total_ocr_annotated']}",
+        f"OCR recommendations: {json.dumps(summary.get('ocr_recommendation_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"Total skipped: {summary['total_skipped']}",
     ]
 
@@ -935,7 +1008,8 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
         lines.append(
             f"Page {page['page_number']}: native_applied={page['native_applied']} "
             f"ocr_annotated={page['ocr_annotated']} skipped={page['skipped']} "
-            f"considered={page['considered_replacements']}"
+            f"considered={page['considered_replacements']} "
+            f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)}"
         )
 
     return "\n".join(lines)
@@ -965,6 +1039,9 @@ def _recommend_ocr_overlay_strategy(replacement: dict[str, Any]) -> tuple[str, l
     bbox = replacement.get("bbox", {})
     overflow_ratio = float(replacement.get("overflow_ratio", 1.0) or 1.0)
     status = replacement.get("status", "missing")
+    fit_risk = replacement.get("fit_risk", "unknown")
+    fit_diagnostics = replacement.get("fit_diagnostics", {})
+    diagnostic_flags = set(fit_diagnostics.get("flags", []))
     translated_text = replacement.get("translated_text", "").strip()
 
     if status != "translated":
@@ -974,12 +1051,19 @@ def _recommend_ocr_overlay_strategy(replacement: dict[str, Any]) -> tuple[str, l
     if _bbox_area(bbox) <= 0:
         return "manual_review", ["missing_bbox"]
 
-    if overflow_ratio <= 1.25 and len(translated_text) <= 220:
+    if fit_risk == "low" and overflow_ratio <= 1.25 and len(translated_text) <= 180:
         reasons.append("translation_size_close_to_source")
-        reasons.append("text_short_enough_for_region_trial")
+        reasons.append("low_fit_risk")
         return "image_overlay_candidate", reasons
 
-    reasons.append("translation_expands_beyond_source_region")
+    if "dense_text_for_region" in diagnostic_flags:
+        reasons.append("dense_text_for_region")
+    if "long_translation" in diagnostic_flags:
+        reasons.append("long_translation")
+    if overflow_ratio > 1.25:
+        reasons.append("translation_expands_beyond_source_region")
+    if not reasons:
+        reasons.append(f"fit_risk={fit_risk}")
     reasons.append("side_note_preserves_scanned_image")
     return "side_annotation_recommended", reasons
 
@@ -1007,6 +1091,7 @@ def build_ocr_overlay_strategy_report(
                     "status": replacement.get("status", "missing"),
                     "fit_risk": replacement.get("fit_risk", "unknown"),
                     "overflow_ratio": replacement.get("overflow_ratio", 1.0),
+                    "fit_diagnostics": replacement.get("fit_diagnostics", {}),
                     "bbox": replacement.get("bbox", {}),
                     "recommendation": recommendation,
                     "reasons": reasons,
@@ -1071,6 +1156,129 @@ def write_ocr_overlay_strategy_report(
     )
     text_path.write_text(
         ocr_overlay_strategy_report_to_text(report),
+        encoding="utf-8",
+    )
+
+    return json_path, text_path
+
+
+def build_ocr_page_translation_preview_report(
+    fusion_translation_preview_report: dict[str, Any],
+    ocr_overlay_strategy_report: dict[str, Any],
+) -> dict[str, Any]:
+    strategy_by_page: dict[int, dict[str, dict[str, Any]]] = {}
+    for page in ocr_overlay_strategy_report.get("pages", []):
+        page_number = int(page.get("page_number"))
+        strategy_by_page[page_number] = {
+            decision.get("segment_id"): decision
+            for decision in page.get("decisions", [])
+        }
+
+    page_reports: list[dict[str, Any]] = []
+    total_segments = 0
+    total_native_segments = 0
+    total_ocr_segments = 0
+
+    for page in fusion_translation_preview_report.get("pages", []):
+        page_number = int(page.get("page_number"))
+        page_strategies = strategy_by_page.get(page_number, {})
+        segments: list[dict[str, Any]] = []
+        native_count = 0
+        ocr_count = 0
+
+        for segment in page.get("segments", []):
+            source_kind = segment.get("source_kind", "native")
+            decision = page_strategies.get(segment.get("segment_id"), {})
+            if source_kind == "ocr":
+                ocr_count += 1
+            else:
+                native_count += 1
+
+            segments.append(
+                {
+                    "segment_id": segment.get("segment_id"),
+                    "source_kind": source_kind,
+                    "source_ref": segment.get("source_ref", ""),
+                    "status": segment.get("status", "missing"),
+                    "source_text": segment.get("source_text", ""),
+                    "translated_text": segment.get("translated_text", ""),
+                    "recommendation": decision.get("recommendation"),
+                    "fit_risk": decision.get("fit_risk"),
+                    "overflow_ratio": decision.get("overflow_ratio"),
+                    "reasons": decision.get("reasons", []),
+                }
+            )
+
+        total_segments += len(segments)
+        total_native_segments += native_count
+        total_ocr_segments += ocr_count
+        page_reports.append(
+            {
+                "page_number": page_number,
+                "route": page.get("route", "unknown"),
+                "segment_count": len(segments),
+                "native_segment_count": native_count,
+                "ocr_segment_count": ocr_count,
+                "segments": segments,
+            }
+        )
+
+    return {
+        "selected_pages": fusion_translation_preview_report.get("selected_pages"),
+        "page_count": len(page_reports),
+        "total_segments": total_segments,
+        "total_native_segments": total_native_segments,
+        "total_ocr_segments": total_ocr_segments,
+        "pages": page_reports,
+    }
+
+
+def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
+    lines = [
+        f"Selected pages: {report.get('selected_pages') if report.get('selected_pages') is not None else 'all'}",
+        f"Preview pages: {report['page_count']}",
+        f"Total segments: {report['total_segments']}",
+        f"Native segments: {report['total_native_segments']}",
+        f"OCR segments: {report['total_ocr_segments']}",
+    ]
+
+    for page in report.get("pages", []):
+        lines.append(
+            f"Page {page['page_number']}: route={page['route']} "
+            f"native={page['native_segment_count']} ocr={page['ocr_segment_count']} segments={page['segment_count']}"
+        )
+        for segment in page.get("segments", []):
+            lines.append(
+                f"  {segment['segment_id']} kind={segment['source_kind']} "
+                f"status={segment['status']} {segment['source_ref']}"
+            )
+            if segment.get("source_kind") == "ocr":
+                lines.append(
+                    f"    ocr_strategy: recommendation={segment.get('recommendation')} "
+                    f"risk={segment.get('fit_risk')} ratio={segment.get('overflow_ratio')} "
+                    f"reasons={', '.join(segment.get('reasons', []))}"
+                )
+            lines.append(f"    source: {_truncate_preview(segment.get('source_text', ''), 220)}")
+            lines.append(f"    translated: {_truncate_preview(segment.get('translated_text', ''), 260)}")
+
+    return "\n".join(lines)
+
+
+def write_ocr_page_translation_preview_report(
+    report: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"{stem}.json"
+    text_path = output_dir / f"{stem}.txt"
+
+    json_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    text_path.write_text(
+        ocr_page_translation_preview_report_to_text(report),
         encoding="utf-8",
     )
 

@@ -35,8 +35,11 @@ def test_run_ocr_experiment_writes_full_artifact_chain_with_mock_backend(tmp_pat
     assert paths["fusion_translation_json"].exists()
     assert paths["fusion_replacement_json"].exists()
     assert paths["ocr_strategy_json"].exists()
+    assert paths["page_translation_json"].exists()
+    assert paths["page_translation_text"].exists()
     assert paths["diagnostics_pdf"].exists()
     assert len(paths["crop_paths"]) == 1
     assert len(paths["diagnostic_images"]) == 1
     assert result["ocr_review"]["status_summary"] == {"ok": 1}
+    assert result["page_translation_preview"]["total_segments"] >= 2
     assert result["fusion_replacement_plan"]["total_replacements"] >= 2

@@ -10,6 +10,7 @@ from pdf_translator.ocr.debug import (
     build_native_ocr_fusion_plan,
     build_native_ocr_fusion_report,
     build_ocr_overlay_strategy_report,
+    build_ocr_page_translation_preview_report,
     build_ocr_review_report,
     render_fusion_overlay_diagnostics,
     run_ocr_debug_pipeline,
@@ -20,6 +21,7 @@ from pdf_translator.ocr.debug import (
     write_native_ocr_fusion_report,
     write_ocr_candidate_report,
     write_ocr_overlay_strategy_report,
+    write_ocr_page_translation_preview_report,
     write_ocr_review_report,
 )
 from pdf_translator.qa.checks import annotate_repeated_blocks, build_overlay_ready_report
@@ -99,6 +101,16 @@ def run_ocr_experiment(
         f"{stem}_ocr_overlay_strategy",
     )
 
+    page_translation_preview = build_ocr_page_translation_preview_report(
+        fusion_translation_preview,
+        ocr_strategy_report,
+    )
+    page_translation_json, page_translation_text = write_ocr_page_translation_preview_report(
+        page_translation_preview,
+        output_dir,
+        f"{stem}_ocr_page_translation_preview",
+    )
+
     diagnostics_pdf, diagnostics_summary, diagnostic_images = render_fusion_overlay_diagnostics(
         pdf_path=pdf_path,
         fusion_replacement_plan=fusion_replacement_plan,
@@ -115,8 +127,10 @@ def run_ocr_experiment(
         "ocr_candidate_report": ocr_candidate_report,
         "ocr_review": ocr_review,
         "fusion_plan": fusion_plan,
+        "fusion_translation_preview": fusion_translation_preview,
         "fusion_replacement_plan": fusion_replacement_plan,
         "ocr_strategy_report": ocr_strategy_report,
+        "page_translation_preview": page_translation_preview,
         "diagnostics_summary": diagnostics_summary,
         "paths": {
             "ocr_candidate_json": ocr_candidate_json,
@@ -134,6 +148,8 @@ def run_ocr_experiment(
             "fusion_replacement_text": fusion_replacement_text,
             "ocr_strategy_json": ocr_strategy_json,
             "ocr_strategy_text": ocr_strategy_text,
+            "page_translation_json": page_translation_json,
+            "page_translation_text": page_translation_text,
             "diagnostics_pdf": diagnostics_pdf,
             "diagnostics_summary": diagnostics_summary_path,
             "crop_paths": crop_paths,

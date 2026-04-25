@@ -38,6 +38,7 @@ from pdf_translator.ocr.debug import (
     native_ocr_fusion_plan_to_text,
     native_ocr_fusion_report_to_text,
     ocr_overlay_strategy_report_to_text,
+    ocr_page_translation_preview_report_to_text,
     ocr_review_report_to_text,
     render_fusion_overlay_diagnostics,
     write_fusion_replacement_plan,
@@ -560,6 +561,34 @@ def ocr_overlay_strategy(
 
 
 @app.command()
+def ocr_page_preview(
+    pdf_path: Path,
+    pages: str = "1",
+    backend: Optional[str] = None,
+) -> None:
+    """Tente une traduction page-level OCR en preview debug, sans recomposition image."""
+    configure_logging()
+    selected_pages = _parse_pages_arg(pages)
+    document = extract_document(pdf_path)
+    result = run_ocr_experiment(
+        pdf_path=pdf_path,
+        document_ir=document.model_dump(),
+        output_dir=settings.debug_dir,
+        translate_text_fn=translate_text,
+        selected_pages=selected_pages,
+        backend=backend,
+    )
+
+    print("[bold]OCR page preview complete[/bold]")
+    print(ocr_page_translation_preview_report_to_text(result["page_translation_preview"]))
+    print(f"[green]Page translation preview:[/green] {result['paths']['page_translation_json']} / {result['paths']['page_translation_text']}")
+    print(f"[green]OCR overlay strategy:[/green] {result['paths']['ocr_strategy_json']} / {result['paths']['ocr_strategy_text']}")
+    print(f"[green]Fusion overlay diagnostics:[/green] {result['paths']['diagnostics_pdf']} / {result['paths']['diagnostics_summary']}")
+    if result["paths"]["diagnostic_images"]:
+        print(f"[green]Diagnostic images generated:[/green] {len(result['paths']['diagnostic_images'])}")
+
+
+@app.command()
 def ocr_experiment(
     pdf_path: Path,
     pages: Optional[str] = None,
@@ -594,6 +623,7 @@ def ocr_experiment(
     print(f"[green]Fusion translation preview:[/green] {paths['fusion_translation_json']} / {paths['fusion_translation_text']}")
     print(f"[green]Fusion replacement plan:[/green] {paths['fusion_replacement_json']} / {paths['fusion_replacement_text']}")
     print(f"[green]OCR overlay strategy:[/green] {paths['ocr_strategy_json']} / {paths['ocr_strategy_text']}")
+    print(f"[green]OCR page translation preview:[/green] {paths['page_translation_json']} / {paths['page_translation_text']}")
     print(f"[green]Fusion overlay diagnostics:[/green] {paths['diagnostics_pdf']} / {paths['diagnostics_summary']}")
     if paths["crop_paths"]:
         print(f"[green]OCR crops generated:[/green] {len(paths['crop_paths'])}")
