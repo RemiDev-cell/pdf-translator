@@ -1178,6 +1178,7 @@ def build_ocr_page_translation_preview_report(
     total_segments = 0
     total_native_segments = 0
     total_ocr_segments = 0
+    selected_pages = fusion_translation_preview_report.get("selected_pages")
 
     for page in fusion_translation_preview_report.get("pages", []):
         page_number = int(page.get("page_number"))
@@ -1223,9 +1224,18 @@ def build_ocr_page_translation_preview_report(
             }
         )
 
+    rendered_pages = [page["page_number"] for page in page_reports]
+    missing_pages = [
+        page_number
+        for page_number in selected_pages or []
+        if page_number not in rendered_pages
+    ]
+
     return {
-        "selected_pages": fusion_translation_preview_report.get("selected_pages"),
+        "selected_pages": selected_pages,
         "page_count": len(page_reports),
+        "rendered_pages": rendered_pages,
+        "missing_pages": missing_pages,
         "total_segments": total_segments,
         "total_native_segments": total_native_segments,
         "total_ocr_segments": total_ocr_segments,
@@ -1237,6 +1247,8 @@ def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
     lines = [
         f"Selected pages: {report.get('selected_pages') if report.get('selected_pages') is not None else 'all'}",
         f"Preview pages: {report['page_count']}",
+        f"Rendered pages: {report.get('rendered_pages', [])}",
+        f"Missing pages: {report.get('missing_pages', [])}",
         f"Total segments: {report['total_segments']}",
         f"Native segments: {report['total_native_segments']}",
         f"OCR segments: {report['total_ocr_segments']}",

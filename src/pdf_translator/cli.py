@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich import print
@@ -76,13 +76,39 @@ app = typer.Typer(no_args_is_help=True)
 
 
 def _parse_pages_arg(pages: str) -> list[int]:
-    values = []
+    values: list[int] = []
+    seen: set[int] = set()
     for item in pages.split(","):
         stripped = item.strip()
         if not stripped:
             continue
-        values.append(int(stripped))
+        if "-" in stripped:
+            start_text, end_text = stripped.split("-", maxsplit=1)
+            start = int(start_text.strip())
+            end = int(end_text.strip())
+            if start > end:
+                raise typer.BadParameter(f"Invalid page range: {stripped}")
+            page_numbers = range(start, end + 1)
+        else:
+            page_numbers = [int(stripped)]
+
+        for page_number in page_numbers:
+            if page_number < 1:
+                raise typer.BadParameter(f"Invalid page number: {page_number}")
+            if page_number in seen:
+                continue
+            values.append(page_number)
+            seen.add(page_number)
     return values
+
+
+def _print_page_preview_result(result: dict[str, Any]) -> None:
+    print(ocr_page_translation_preview_report_to_text(result["page_translation_preview"]))
+    print(f"[green]Page translation preview:[/green] {result['paths']['page_translation_json']} / {result['paths']['page_translation_text']}")
+    print(f"[green]OCR overlay strategy:[/green] {result['paths']['ocr_strategy_json']} / {result['paths']['ocr_strategy_text']}")
+    print(f"[green]Fusion overlay diagnostics:[/green] {result['paths']['diagnostics_pdf']} / {result['paths']['diagnostics_summary']}")
+    if result["paths"]["diagnostic_images"]:
+        print(f"[green]Diagnostic images generated:[/green] {len(result['paths']['diagnostic_images'])}")
 
 
 @app.command()
@@ -580,12 +606,31 @@ def ocr_page_preview(
     )
 
     print("[bold]OCR page preview complete[/bold]")
-    print(ocr_page_translation_preview_report_to_text(result["page_translation_preview"]))
-    print(f"[green]Page translation preview:[/green] {result['paths']['page_translation_json']} / {result['paths']['page_translation_text']}")
-    print(f"[green]OCR overlay strategy:[/green] {result['paths']['ocr_strategy_json']} / {result['paths']['ocr_strategy_text']}")
-    print(f"[green]Fusion overlay diagnostics:[/green] {result['paths']['diagnostics_pdf']} / {result['paths']['diagnostics_summary']}")
-    if result["paths"]["diagnostic_images"]:
-        print(f"[green]Diagnostic images generated:[/green] {len(result['paths']['diagnostic_images'])}")
+    _print_page_preview_result(result)
+
+
+@app.command()
+def document_preview(
+    pdf_path: Path,
+    pages: str = "1",
+    backend: Optional[str] = None,
+) -> None:
+    """Génère une preview multi-pages de revue: overlay natif sûr, OCR annoté."""
+    configure_logging()
+    selected_pages = _parse_pages_arg(pages)
+    document = extract_document(pdf_path)
+    result = run_ocr_experiment(
+        pdf_path=pdf_path,
+        document_ir=document.model_dump(),
+        output_dir=settings.debug_dir,
+        translate_text_fn=translate_text,
+        selected_pages=selected_pages,
+        backend=backend,
+        artifact_stem=f"{pdf_path.stem}_document_preview",
+    )
+
+    print("[bold]Document preview complete[/bold]")
+    _print_page_preview_result(result)
 
 
 @app.command()

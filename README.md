@@ -182,6 +182,12 @@ Try a page-level OCR translation preview without attempting image recomposition:
 ./.venv/bin/python -m pdf_translator.cli ocr-page-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract
 ```
 
+Generate a multi-page document preview for review, with safe native overlays and annotated OCR regions:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli document-preview data/input/supportpourocr01.pdf --pages 1-3 --backend tesseract
+```
+
 ## Debug Artifacts
 
 The pipeline writes useful intermediate artifacts under `data/debug/`, including:

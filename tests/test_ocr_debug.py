@@ -550,11 +550,44 @@ def test_build_ocr_page_translation_preview_report_combines_page_translation_and
     )
 
     assert report["page_count"] == 1
+    assert report["rendered_pages"] == [1]
+    assert report["missing_pages"] == []
     assert report["total_native_segments"] == 1
     assert report["total_ocr_segments"] == 1
     assert report["pages"][0]["segments"][1]["recommendation"] == "image_overlay_candidate"
     assert "Page 1: route=native_plus_ocr_candidates" in text
+    assert "Rendered pages: [1]" in text
+    assert "Missing pages: []" in text
     assert "P1O0 kind=ocr status=translated" in text
     assert "ocr_strategy: recommendation=image_overlay_candidate" in text
     assert json_path.exists()
     assert text_path.exists()
+
+
+def test_build_ocr_page_translation_preview_report_marks_missing_selected_pages() -> None:
+    translation_preview = {
+        "selected_pages": [1, 2],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "native_only",
+                "segments": [
+                    {
+                        "segment_id": "P1N0",
+                        "source_kind": "native",
+                        "source_ref": "block:0",
+                        "status": "translated",
+                        "source_text": "Bonjour",
+                        "translated_text": "Hello",
+                    },
+                ],
+            }
+        ],
+    }
+
+    report = build_ocr_page_translation_preview_report(translation_preview, {"pages": []})
+    text = ocr_page_translation_preview_report_to_text(report)
+
+    assert report["rendered_pages"] == [1]
+    assert report["missing_pages"] == [2]
+    assert "Missing pages: [2]" in text

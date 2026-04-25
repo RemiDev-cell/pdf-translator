@@ -28,10 +28,12 @@ def test_run_ocr_experiment_writes_full_artifact_chain_with_mock_backend(tmp_pat
         output_dir=tmp_path,
         translate_text_fn=lambda text: f"EN:{text}",
         backend="mock",
+        artifact_stem="custom_preview",
     )
 
     paths = result["paths"]
     assert paths["manifest"].exists()
+    assert paths["manifest"].name == "custom_preview_ocr_dry_run_manifest.json"
     assert paths["fusion_translation_json"].exists()
     assert paths["fusion_replacement_json"].exists()
     assert paths["ocr_strategy_json"].exists()

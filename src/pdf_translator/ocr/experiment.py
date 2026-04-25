@@ -35,10 +35,11 @@ def run_ocr_experiment(
     translate_text_fn: Callable[[str], str],
     selected_pages: list[int] | None = None,
     backend: str | None = None,
+    artifact_stem: str | None = None,
 ) -> dict[str, Any]:
     annotated_ir = annotate_repeated_blocks(document_ir)
     page_numbers = selected_pages or [page["page_number"] for page in annotated_ir.get("pages", [])]
-    stem = pdf_path.stem
+    stem = artifact_stem or pdf_path.stem
 
     overlay_ready = build_overlay_ready_report(annotated_ir, page_numbers)
     ocr_candidate_report = build_ocr_candidate_report(annotated_ir, selected_pages)
