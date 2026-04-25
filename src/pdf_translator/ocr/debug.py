@@ -846,7 +846,7 @@ def _build_fit_diagnostics(
         "translated_line_count": translated_line_count,
         "bbox_area": round(area, 2),
         "translated_chars_per_1000pt2": round(translated_density, 2),
-        "flags": flags,
+        "flags": sorted(flags),
     }
 
 def _analyze_ocr_rendering_context(
@@ -881,9 +881,55 @@ def _analyze_ocr_rendering_context(
         "translated_lines": translated_lines,
         "bbox_area": bbox_area,
         "translated_density": translated_density,
-        "flags": flags,
+        "flags": sorted(flags),
         "fit_risk": fit_risk,
         "visual_role": visual_role,
+    }
+
+
+def _build_ocr_strategy_decision(
+    source_text: str,
+    translated_text: str,
+    fit_risk: str,
+    fit_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    context = _analyze_ocr_rendering_context(
+        source_text=source_text,
+        translated_text=translated_text,
+        fit_risk=fit_risk,
+        fit_diagnostics=fit_diagnostics,
+    )
+
+    strategy = _choose_ocr_apply_strategy(
+        source_text=source_text,
+        translated_text=translated_text,
+        fit_risk=fit_risk,
+        fit_diagnostics=fit_diagnostics,
+    )
+
+    reasons = []
+
+    if context["visual_role"] == "large_text_region":
+        reasons.append("large_text_region")
+    if context["translated_density"] <= 18.0:
+        reasons.append("acceptable_density")
+    if fit_risk in {"low", "medium"}:
+        reasons.append(f"fit_risk={fit_risk}")
+    if context["translated_len"] <= 140:
+        reasons.append("short_text")
+
+    if strategy == "ocr_overlay_candidate":
+        confidence = "high" if "large_text_region" in reasons else "medium"
+    elif strategy == "ocr_side_annotation":
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "apply_strategy": strategy,
+        "confidence": confidence,
+        "reasons": reasons,
+        "context": context,
     }
 
 
@@ -948,9 +994,16 @@ def build_fusion_replacement_plan(
 
             if source_kind == "ocr":
                 fit_risk = _estimate_fusion_fit_risk(source_text, translated_text, source_kind)
-                apply_strategy = _choose_ocr_apply_strategy(source_text, translated_text, fit_risk, fit_diagnostics)
+                decision = _build_ocr_strategy_decision(
+                    source_text=source_text,
+                    translated_text=translated_text,
+                    fit_risk=fit_risk,
+                    fit_diagnostics=fit_diagnostics,
+                )
+                apply_strategy = decision["apply_strategy"]
             else:
                 apply_strategy = "native_overlay_candidate"
+                decision = None
             apply_strategy_summary[apply_strategy] = apply_strategy_summary.get(apply_strategy, 0) + 1
 
             replacements.append(
@@ -970,6 +1023,7 @@ def build_fusion_replacement_plan(
                     "fit_risk": _estimate_fusion_fit_risk(source_text, translated_text, source_kind),
                     "fit_diagnostics": fit_diagnostics,
                     "apply_strategy": apply_strategy,
+                    "ocr_decision": decision,
                 }
             )
 
@@ -1150,29 +1204,27 @@ def render_fusion_overlay_diagnostics(
             if strategy == "ocr_overlay_candidate" and status == "translated":
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
-
-                if recommendation == "image_overlay_candidate":
-                    total_ocr_overlay_applied += 1
-                elif recommendation == "side_annotation_recommended":
-                    total_ocr_side_annotated += 1
-                else:
-                    total_ocr_review_required += 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
-                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-                translated_text = replacement.get("translated_text", "")
-                approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
-                font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
-                page.insert_textbox(
-                    rect + (2, 2, -2, -2),
-                    translated_text,
-                    fontsize=font_size,
-                    fontname="helv",
-                    color=(0, 0, 0),
-                )
-                page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
-                ocr_annotated += 1
-                total_ocr_annotated += 1
-                continue
+
+                decision = replacement.get("ocr_decision") or {}
+                confidence = decision.get("confidence", "medium")
+
+                if confidence in {"high", "medium"}:
+                    page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                    translated_text = replacement.get("translated_text", "")
+                    approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
+                    font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
+                    page.insert_textbox(
+                        rect + (2, 2, -2, -2),
+                        translated_text,
+                        fontsize=font_size,
+                        fontname="helv",
+                        color=(0, 0, 0),
+                    )
+                    page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+                    ocr_annotated += 1
+                    total_ocr_annotated += 1
+                    continue
 
             if strategy in {"ocr_side_annotation", "ocr_review_required"}:
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
