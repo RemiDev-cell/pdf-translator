@@ -66,6 +66,21 @@ def _parse_tesseract_tsv_lines(tsv_text: str) -> list[dict[str, Any]]:
         )
         grouped.setdefault(key, []).append(row)
 
+    all_lefts = [int(row.get("left", 0) or 0) for row in rows]
+    all_tops = [int(row.get("top", 0) or 0) for row in rows]
+    all_rights = [
+        int(row.get("left", 0) or 0) + int(row.get("width", 0) or 0)
+        for row in rows
+    ]
+    all_bottoms = [
+        int(row.get("top", 0) or 0) + int(row.get("height", 0) or 0)
+        for row in rows
+    ]
+
+    image_width = max(all_rights) if all_rights else 0
+    image_height = max(all_bottoms) if all_bottoms else 0
+    edge_margin_px = 3
+
     layout_lines: list[dict[str, Any]] = []
     for line_index, (key, words) in enumerate(grouped.items(), start=1):
         lefts = [int(word.get("left", 0) or 0) for word in words]
@@ -73,6 +88,11 @@ def _parse_tesseract_tsv_lines(tsv_text: str) -> list[dict[str, Any]]:
         rights = [int(word.get("left", 0) or 0) + int(word.get("width", 0) or 0) for word in words]
         bottoms = [int(word.get("top", 0) or 0) + int(word.get("height", 0) or 0) for word in words]
         confidences = [float(word.get("conf", -1) or -1) for word in words if float(word.get("conf", -1) or -1) >= 0]
+
+        x0 = min(lefts) if lefts else 0
+        y0 = min(tops) if tops else 0
+        x1 = max(rights) if rights else 0
+        y1 = max(bottoms) if bottoms else 0
 
         layout_lines.append(
             {
@@ -83,11 +103,15 @@ def _parse_tesseract_tsv_lines(tsv_text: str) -> list[dict[str, Any]]:
                 "line_num": int(key[3]),
                 "text": " ".join(word.get("text", "").strip() for word in words if word.get("text", "").strip()),
                 "bbox_px": {
-                    "x0": min(lefts) if lefts else 0,
-                    "y0": min(tops) if tops else 0,
-                    "x1": max(rights) if rights else 0,
-                    "y1": max(bottoms) if bottoms else 0,
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
                 },
+                "touches_left_edge": x0 <= edge_margin_px,
+                "touches_right_edge": bool(image_width and x1 >= image_width - edge_margin_px),
+                "touches_top_edge": y0 <= edge_margin_px,
+                "touches_bottom_edge": bool(image_height and y1 >= image_height - edge_margin_px),
                 "confidence": round(sum(confidences) / len(confidences), 2) if confidences else None,
                 "word_count": len(words),
             }

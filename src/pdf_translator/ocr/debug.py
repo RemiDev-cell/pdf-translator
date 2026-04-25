@@ -1233,7 +1233,7 @@ def _is_ocr_ui_line(text: str) -> bool:
         return False
 
     # Only remove lines that look like form controls, not normal prose.
-    radio_like_prefixes = ("o ", "0 ", "® ", "☐ ", "☑ ")
+    radio_like_prefixes = ("o ", "0 ", "® ", "☐ ", "☑ ", "[ ] ", "[x] ", "[ x ] ")
     if normalized.startswith(radio_like_prefixes) and len(normalized) <= 140:
         return True
 
