@@ -1257,6 +1257,19 @@ def _clean_ocr_overlay_text(text: str) -> str:
     return cleaned or text.strip()
 
 
+
+def _filter_ocr_layout_text_lines(
+    ocr_layout: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop OCR layout lines that correspond to UI controls, not body text."""
+    filtered = []
+    for line in ocr_layout:
+        text = str(line.get("text", "")).strip()
+        if text and _is_ocr_ui_line(text):
+            continue
+        filtered.append(line)
+    return filtered
+
 def _ocr_layout_render_lines(
     replacement: dict[str, Any],
     line_count: int,
@@ -1396,7 +1409,7 @@ def _render_ocr_layout_overlay(
     rect: fitz.Rect,
     replacement: dict[str, Any],
 ) -> bool:
-    ocr_layout = replacement.get("ocr_layout") or []
+    ocr_layout = _filter_ocr_layout_text_lines(replacement.get("ocr_layout") or [])
     if not ocr_layout:
         return False
 
@@ -1407,27 +1420,45 @@ def _render_ocr_layout_overlay(
 
     blocks = _group_ocr_layout_blocks(ocr_layout)
 
-    # Heuristic: if many lines → render as blocks
+    # Heuristic: if many lines → render by OCR blocks, not by repeating
+    # the full translated text in each block.
     if len(ocr_layout) >= 6:
-        translated_text = replacement.get("translated_text", "")
+        render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
+        line_offset = 0
+        rendered_blocks = 0
 
         for block in blocks:
             block_rect = _compute_block_bbox(block, rect, crop_width_px, crop_height_px)
             if not block_rect or block_rect.is_empty:
+                line_offset += len(block)
                 continue
 
-            approx_line_count = max(1, len(block))
-            font_size = min(11, max(6, block_rect.height / (approx_line_count * 1.3)))
+            block_lines = render_lines[line_offset : line_offset + len(block)]
+            line_offset += len(block)
+
+            block_text = "\n".join(line.strip() for line in block_lines if line.strip())
+            if not block_text:
+                continue
+
+            text_box = block_rect + (2, 2, -2, -2)
+            font_size = _fit_ocr_textbox_font_size(
+                page,
+                text_box,
+                block_text,
+                min_size=4.5,
+                max_size=11.0,
+            )
 
             page.insert_textbox(
-                block_rect + (2, 2, -2, -2),
-                translated_text,
+                text_box,
+                block_text,
                 fontsize=font_size,
                 fontname="helv",
                 color=(0, 0, 0),
             )
+            rendered_blocks += 1
 
-        return True
+        return rendered_blocks > 0
 
     render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
 
@@ -1551,9 +1582,7 @@ def render_fusion_overlay_diagnostics(
                     page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
-                    rendered_with_layout = False
-                    if recommendation == "image_overlay_candidate":
-                        rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
+                    rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
 
                     if not rendered_with_layout:
                         # Conservative OCR block fitting: avoid silent truncation in dense translated OCR regions.
