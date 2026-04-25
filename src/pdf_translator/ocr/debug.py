@@ -709,6 +709,8 @@ def build_fusion_translation_preview_report(
                             "translated_text": translated_chunk,
                             "source_length": len(source_chunk),
                             "translated_length": len(translated_chunk),
+                            "source_endswith_ellipsis": source_chunk.strip().endswith("..."),
+                            "translated_endswith_ellipsis": translated_chunk.strip().endswith("..."),
                         }
                     )
                 translated_text = "\n\n".join(translated_chunks)
@@ -727,6 +729,10 @@ def build_fusion_translation_preview_report(
                     "translated_text": translated_text,
                     "translation_chunk_count": len(translation_chunks),
                     "translation_chunks": translation_chunks,
+                    "source_length": len(source_text),
+                    "translated_length": len(translated_text),
+                    "source_endswith_ellipsis": source_text.strip().endswith("..."),
+                    "translated_endswith_ellipsis": translated_text.strip().endswith("..."),
                     "role": segment.get("role", "content"),
                     "bbox": segment.get("bbox", {}),
                     "ocr_layout": segment.get("ocr_layout", []),
