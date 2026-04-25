@@ -195,6 +195,33 @@ def _estimate_ocr_quality(text: str) -> str:
 
 
 
+
+def _ocr_layout_has_edge_clipping(ocr_layout: list[dict[str, Any]]) -> bool:
+    """Return True when OCR lines touch crop edges, suggesting clipped source text."""
+    for line in ocr_layout:
+        if (
+            line.get("touches_left_edge")
+            or line.get("touches_right_edge")
+            or line.get("touches_top_edge")
+            or line.get("touches_bottom_edge")
+        ):
+            return True
+    return False
+
+
+def _ocr_layout_edge_clipping_count(ocr_layout: list[dict[str, Any]]) -> int:
+    """Count OCR lines touching crop edges."""
+    count = 0
+    for line in ocr_layout:
+        if (
+            line.get("touches_left_edge")
+            or line.get("touches_right_edge")
+            or line.get("touches_top_edge")
+            or line.get("touches_bottom_edge")
+        ):
+            count += 1
+    return count
+
 def build_ocr_review_report(manifest: dict[str, Any]) -> dict[str, Any]:
     page_reports: list[dict[str, Any]] = []
     total_regions = 0
@@ -222,6 +249,8 @@ def build_ocr_review_report(manifest: dict[str, Any]) -> dict[str, Any]:
                     "char_count": len(normalized_text),
                     "line_count": len([line for line in normalized_text.splitlines() if line.strip()]),
                     "suspicious_char_count": _count_suspicious_chars(normalized_text),
+                    "edge_clipping_detected": _ocr_layout_has_edge_clipping(candidate.get("ocr_layout", [])),
+                    "edge_clipping_line_count": _ocr_layout_edge_clipping_count(candidate.get("ocr_layout", [])),
                     "text": normalized_text,
                     "preview": normalized_text[:240],
                     "ocr_layout": candidate.get("ocr_layout", []),
