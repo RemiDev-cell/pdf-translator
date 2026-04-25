@@ -415,13 +415,15 @@ def build_native_ocr_fusion_report(
         ocr_page = ocr_pages.get(page_number, {})
         native_regions = []
         for candidate in native_page.get("candidates", []):
-            preview = _truncate_preview(candidate.get("text", ""))
+            candidate_text = candidate.get("text", "")
+            preview = _truncate_preview(candidate_text)
             native_regions.append(
                 {
                     "block_index": candidate.get("block_index"),
                     "role": candidate.get("role", "content"),
                     "line_count": candidate.get("line_count", 0),
                     "bbox": candidate.get("bbox", {}),
+                    "text": candidate_text,
                     "preview": preview,
                 }
             )
@@ -438,7 +440,6 @@ def build_native_ocr_fusion_report(
                     "bbox": region.get("bbox", {}),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
-                    "ocr_layout": region.get("ocr_layout", []),
                     "ocr_layout": region.get("ocr_layout", []),
                 }
             )
@@ -564,7 +565,7 @@ def build_native_ocr_fusion_plan(
                 "source_kind": "native",
                 "source_ref": f"block:{native_region['block_index']}",
                 "role": native_region.get("role", "content"),
-                "text": native_region.get("preview", ""),
+                "text": native_region.get("text") or native_region.get("preview", ""),
                 "bbox": native_region.get("bbox", {}),
                 "translate": True,
             }
@@ -1336,6 +1337,59 @@ def _compute_block_bbox(block_lines, rect, crop_width_px, crop_height_px):
         rect.y0 + (max(y1s) / crop_height_px) * rect.height,
     ) & rect
 
+
+
+def _fit_ocr_textbox_font_size(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    text: str,
+    *,
+    fontname: str = "helv",
+    min_size: float = 4.5,
+    max_size: float = 9.0,
+    color: tuple[float, float, float] = (0, 0, 0),
+) -> float:
+    """Return the largest font size that fits text inside rect.
+
+    Trial insertions are performed on a scratch page so the real page is not
+    mutated during fitting.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return min_size
+
+    doc = fitz.open()
+    try:
+        scratch = doc.new_page(width=page.rect.width, height=page.rect.height)
+
+        low = min_size
+        high = max_size
+        best = min_size
+
+        for _ in range(10):
+            mid = (low + high) / 2.0
+
+            result = scratch.insert_textbox(
+                rect,
+                cleaned,
+                fontsize=mid,
+                fontname=fontname,
+                color=color,
+                align=fitz.TEXT_ALIGN_LEFT,
+            )
+
+            fits = result >= 0
+            scratch.clean_contents()
+
+            if fits:
+                best = mid
+                low = mid
+            else:
+                high = mid
+
+        return max(min_size, min(best, max_size))
+    finally:
+        doc.close()
 
 def _render_ocr_layout_overlay(
     page: fitz.Page,
