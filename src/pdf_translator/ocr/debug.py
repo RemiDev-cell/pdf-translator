@@ -625,6 +625,22 @@ def _order_native_regions_for_reading(native_regions: list[dict[str, Any]]) -> l
     page_bottom = max(_bbox_float(region, "y1") for region in regions)
     page_height = max(1.0, page_bottom - page_top)
 
+    candidate_left = [
+        region for region in regions
+        if _bbox_float(region, "x0") < column_threshold
+        and (_bbox_float(region, "y1") - _bbox_float(region, "y0")) >= 12
+    ]
+    candidate_right = [
+        region for region in regions
+        if _bbox_float(region, "x0") >= column_threshold
+        and (_bbox_float(region, "y1") - _bbox_float(region, "y0")) >= 12
+    ]
+
+    # Avoid applying column ordering to brochures/cards/forms where x clusters
+    # exist but do not represent two sustained text columns.
+    if len(candidate_left) < 4 or len(candidate_right) < 4:
+        return sorted(regions, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
+
     headers: list[dict[str, Any]] = []
     left_column: list[dict[str, Any]] = []
     right_column: list[dict[str, Any]] = []
