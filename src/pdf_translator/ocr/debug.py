@@ -306,6 +306,63 @@ def _truncate_preview(text: str, limit: int = 220) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
+def _split_long_text_by_words(text: str, max_chars: int) -> list[str]:
+    chunks: list[str] = []
+    current_words: list[str] = []
+    current_len = 0
+
+    for word in text.split():
+        next_len = current_len + len(word) + (1 if current_words else 0)
+        if current_words and next_len > max_chars:
+            chunks.append(" ".join(current_words))
+            current_words = [word]
+            current_len = len(word)
+            continue
+        current_words.append(word)
+        current_len = next_len
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    return chunks
+
+
+def _split_ocr_text_for_translation(text: str, max_chars: int = 520) -> list[str]:
+    normalized = _normalize_ocr_text(text)
+    if not normalized:
+        return []
+
+    paragraphs = [
+        " ".join(part.split())
+        for part in normalized.split("\n\n")
+        if part.strip()
+    ]
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        paragraph_chunks = (
+            [paragraph]
+            if len(paragraph) <= max_chars
+            else _split_long_text_by_words(paragraph, max_chars)
+        )
+
+        for paragraph_chunk in paragraph_chunks:
+            if not current:
+                current = paragraph_chunk
+                continue
+            if len(current) + len(paragraph_chunk) + 2 <= max_chars:
+                current = f"{current}\n\n{paragraph_chunk}"
+                continue
+            chunks.append(current)
+            current = paragraph_chunk
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
 
 def build_native_ocr_fusion_report(
     overlay_ready_report: dict[str, Any],
@@ -578,10 +635,30 @@ def build_fusion_translation_preview_report(
             if not segment.get("translate", True):
                 translated_text = source_text
                 status = "skipped"
+                translation_chunks: list[dict[str, Any]] = []
             else:
-                protected_text, placeholders = protect_text(source_text)
-                translated_raw = translate_text_fn(protected_text)
-                translated_text = restore_text(translated_raw, placeholders)
+                source_chunks = (
+                    _split_ocr_text_for_translation(source_text)
+                    if segment.get("source_kind") == "ocr"
+                    else [source_text]
+                )
+                translated_chunks: list[str] = []
+                translation_chunks = []
+                for chunk_index, source_chunk in enumerate(source_chunks, start=1):
+                    protected_text, placeholders = protect_text(source_chunk)
+                    translated_raw = translate_text_fn(protected_text)
+                    translated_chunk = restore_text(translated_raw, placeholders)
+                    translated_chunks.append(translated_chunk)
+                    translation_chunks.append(
+                        {
+                            "chunk_index": chunk_index,
+                            "source_text": source_chunk,
+                            "translated_text": translated_chunk,
+                            "source_length": len(source_chunk),
+                            "translated_length": len(translated_chunk),
+                        }
+                    )
+                translated_text = "\n\n".join(translated_chunks)
                 status = "translated"
                 translated_segments += 1
 
@@ -595,6 +672,8 @@ def build_fusion_translation_preview_report(
                     "status": status,
                     "source_text": source_text,
                     "translated_text": translated_text,
+                    "translation_chunk_count": len(translation_chunks),
+                    "translation_chunks": translation_chunks,
                     "role": segment.get("role", "content"),
                     "bbox": segment.get("bbox", {}),
                 }
@@ -635,6 +714,8 @@ def fusion_translation_preview_report_to_text(report: dict[str, Any]) -> str:
             lines.append(
                 f"  {segment['segment_id']} [{segment['source_kind']}/{segment['status']}] {segment['source_ref']}"
             )
+            if segment.get("translation_chunk_count", 0) > 1:
+                lines.append(f"    chunks: {segment['translation_chunk_count']}")
             lines.append(f"    source: {_truncate_preview(segment.get('source_text', ''), 140)}")
             lines.append(f"    translated: {_truncate_preview(segment.get('translated_text', ''), 140)}")
 
@@ -1207,6 +1288,7 @@ def build_ocr_page_translation_preview_report(
                     "status": segment.get("status", "missing"),
                     "source_text": segment.get("source_text", ""),
                     "translated_text": segment.get("translated_text", ""),
+                    "translation_chunk_count": segment.get("translation_chunk_count", 0),
                     "recommendation": decision.get("recommendation"),
                     "fit_risk": decision.get("fit_risk"),
                     "overflow_ratio": decision.get("overflow_ratio"),
@@ -1274,6 +1356,8 @@ def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
                     f"risk={segment.get('fit_risk')} ratio={segment.get('overflow_ratio')} "
                     f"reasons={', '.join(segment.get('reasons', []))}"
                 )
+                if segment.get("translation_chunk_count", 0) > 1:
+                    lines.append(f"    translation_chunks: {segment['translation_chunk_count']}")
             lines.append(f"    source: {_truncate_preview(segment.get('source_text', ''), 220)}")
             lines.append(f"    translated: {_truncate_preview(segment.get('translated_text', ''), 260)}")
 

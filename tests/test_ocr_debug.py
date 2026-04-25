@@ -298,6 +298,49 @@ def test_build_fusion_translation_preview_report_translates_mix_of_native_and_oc
     assert text_path.exists()
 
 
+def test_build_fusion_translation_preview_report_chunks_long_ocr_text() -> None:
+    long_ocr_text = (
+        "Premier paragraphe OCR avec assez de contenu pour commencer le bloc. "
+        + "mot " * 180
+        + "\n\nDeuxieme paragraphe OCR qui doit rester dans la meme region mais etre traduit separement. "
+        + "suite " * 130
+    )
+    fusion_plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "native_plus_ocr_candidates",
+                "segments": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "text": long_ocr_text,
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+    seen_chunks: list[str] = []
+
+    def fake_translate(text: str) -> str:
+        seen_chunks.append(text)
+        return f"EN:{text[:24]}"
+
+    report = build_fusion_translation_preview_report(fusion_plan, fake_translate)
+    segment = report["pages"][0]["segments"][0]
+
+    assert report["total_segments"] == 1
+    assert report["translated_segments"] == 1
+    assert segment["source_text"] == long_ocr_text
+    assert segment["translation_chunk_count"] > 1
+    assert len(seen_chunks) == segment["translation_chunk_count"]
+    assert all(len(chunk) <= 520 for chunk in seen_chunks)
+    assert "\n\n" in segment["translated_text"]
+
+
 def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(tmp_path: Path) -> None:
     preview_report = {
         "selected_pages": [1],
@@ -533,6 +576,7 @@ def test_build_ocr_page_translation_preview_report_combines_page_translation_and
                         "status": "translated",
                         "source_text": "Texte OCR",
                         "translated_text": "OCR text",
+                        "translation_chunk_count": 2,
                     },
                 ],
             }
@@ -569,11 +613,13 @@ def test_build_ocr_page_translation_preview_report_combines_page_translation_and
     assert report["total_native_segments"] == 1
     assert report["total_ocr_segments"] == 1
     assert report["pages"][0]["segments"][1]["recommendation"] == "image_overlay_candidate"
+    assert report["pages"][0]["segments"][1]["translation_chunk_count"] == 2
     assert "Page 1: route=native_plus_ocr_candidates" in text
     assert "Rendered pages: [1]" in text
     assert "Missing pages: []" in text
     assert "P1O0 kind=ocr status=translated" in text
     assert "ocr_strategy: recommendation=image_overlay_candidate" in text
+    assert "translation_chunks: 2" in text
     assert json_path.exists()
     assert text_path.exists()
 
