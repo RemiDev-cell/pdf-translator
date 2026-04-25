@@ -1420,12 +1420,67 @@ def _render_ocr_layout_overlay(
 
     blocks = _group_ocr_layout_blocks(ocr_layout)
 
-    # Heuristic: if many lines → render by OCR blocks, not by repeating
-    # the full translated text in each block.
+    # Heuristic: if many lines → render by OCR blocks, preserving a short
+    # first title line separately from the body paragraph.
     if len(ocr_layout) >= 6:
+        translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
+        paragraphs = [p.strip() for p in translated_text.split("\n\n") if p.strip()]
+
+        rendered_blocks = 0
+
+        # Common scanned-layout case: one short title line followed by body text.
+        has_title_block = bool(blocks and len(blocks[0]) == 1 and len(str(blocks[0][0].get("text", "")).strip()) <= 80)
+
+        if has_title_block and paragraphs:
+            title_text = paragraphs[0].splitlines()[0].strip()
+            body_text = "\n\n".join(paragraphs[1:]).strip()
+            if not body_text:
+                body_text = translated_text.replace(title_text, "", 1).strip()
+
+            title_rect = _compute_block_bbox(blocks[0], rect, crop_width_px, crop_height_px)
+            body_lines = [line for block in blocks[1:] for line in block]
+            body_rect = _compute_block_bbox(body_lines, rect, crop_width_px, crop_height_px)
+
+            if title_rect and not title_rect.is_empty and title_text:
+                title_box = title_rect + (2, 0, -2, 2)
+                title_size = _fit_ocr_textbox_font_size(
+                    page,
+                    title_box,
+                    title_text,
+                    min_size=5.5,
+                    max_size=13.0,
+                )
+                page.insert_textbox(
+                    title_box,
+                    title_text,
+                    fontsize=title_size,
+                    fontname="helv",
+                    color=(0, 0, 0),
+                )
+                rendered_blocks += 1
+
+            if body_rect and not body_rect.is_empty and body_text:
+                text_box = body_rect + (2, 2, -2, -2)
+                font_size = _fit_ocr_textbox_font_size(
+                    page,
+                    text_box,
+                    body_text,
+                    min_size=5.0,
+                    max_size=13.0,
+                )
+                page.insert_textbox(
+                    text_box,
+                    body_text,
+                    fontsize=font_size,
+                    fontname="helv",
+                    color=(0, 0, 0),
+                )
+                rendered_blocks += 1
+
+            return rendered_blocks > 0
+
         render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
         line_offset = 0
-        rendered_blocks = 0
 
         for block in blocks:
             block_rect = _compute_block_bbox(block, rect, crop_width_px, crop_height_px)
@@ -1445,8 +1500,8 @@ def _render_ocr_layout_overlay(
                 page,
                 text_box,
                 block_text,
-                min_size=4.5,
-                max_size=11.0,
+                min_size=5.0,
+                max_size=13.0,
             )
 
             page.insert_textbox(
