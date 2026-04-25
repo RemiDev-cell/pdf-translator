@@ -860,23 +860,41 @@ def _choose_ocr_apply_strategy(
 ) -> str:
     source_len = len(source_text.replace("\n", " ").strip())
     translated_len = len(translated_text.replace("\n", " ").strip())
+    source_word_count = len(source_text.split())
+    translated_word_count = len(translated_text.split())
     source_lines = fit_diagnostics.get("source_line_count", 0)
     translated_lines = fit_diagnostics.get("translated_line_count", 0)
+    bbox_area = float(fit_diagnostics.get("bbox_area", 0.0))
+    translated_density = float(fit_diagnostics.get("translated_chars_per_1000pt2", 0.0))
     flags = set(fit_diagnostics.get("flags", []))
 
-    if translated_len == 0 or "missing_bbox" in flags:
+    if translated_len == 0 or "missing_bbox" in flags or bbox_area <= 0:
         return "ocr_review_required"
 
     if fit_risk == "high":
         return "ocr_side_annotation"
 
+    if "dense_text_for_region" in flags or translated_density > 18.0:
+        return "ocr_side_annotation"
+
+    if "more_translated_lines_than_source" in flags and translated_lines > 2:
+        return "ocr_side_annotation"
+
     if source_len <= 80 and translated_len <= 110 and source_lines <= 2 and translated_lines <= 2:
         return "ocr_overlay_candidate"
 
-    if source_len <= 140 and translated_len <= 180 and fit_risk == "low":
+    if (
+        fit_risk == "low"
+        and source_len <= 140
+        and translated_len <= 180
+        and source_word_count <= 24
+        and translated_word_count <= 30
+        and translated_density <= 14.0
+    ):
         return "ocr_overlay_candidate"
 
     return "ocr_side_annotation"
+
 
 def build_fusion_replacement_plan(
     fusion_translation_preview_report: dict[str, Any],
