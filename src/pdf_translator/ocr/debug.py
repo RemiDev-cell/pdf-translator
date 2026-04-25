@@ -849,18 +849,63 @@ def _build_fit_diagnostics(
         "flags": flags,
     }
 
+def _analyze_ocr_rendering_context(
+    source_text: str,
+    translated_text: str,
+    fit_risk: str,
+    fit_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    source_len = len(source_text.replace("\n", " ").strip())
+    translated_len = len(translated_text.replace("\n", " ").strip())
+    source_word_count = len(source_text.split())
+    translated_word_count = len(translated_text.split())
+    source_lines = fit_diagnostics.get("source_line_count", 0)
+    translated_lines = fit_diagnostics.get("translated_line_count", 0)
+    bbox_area = float(fit_diagnostics.get("bbox_area", 0.0))
+    translated_density = float(fit_diagnostics.get("translated_chars_per_1000pt2", 0.0))
+    flags = set(fit_diagnostics.get("flags", []))
+
+    if bbox_area >= 35000:
+        visual_role = "large_text_region"
+    elif translated_len <= 140 and translated_lines <= max(3, source_lines + 1):
+        visual_role = "short_label_or_caption"
+    else:
+        visual_role = "medium_or_uncertain_region"
+
+    return {
+        "source_len": source_len,
+        "translated_len": translated_len,
+        "source_word_count": source_word_count,
+        "translated_word_count": translated_word_count,
+        "source_lines": source_lines,
+        "translated_lines": translated_lines,
+        "bbox_area": bbox_area,
+        "translated_density": translated_density,
+        "flags": flags,
+        "fit_risk": fit_risk,
+        "visual_role": visual_role,
+    }
+
+
 def _choose_ocr_apply_strategy(
     source_text: str,
     translated_text: str,
     fit_risk: str,
     fit_diagnostics: dict[str, Any],
 ) -> str:
-    translated_len = len(translated_text.replace("\n", " ").strip())
-    source_lines = fit_diagnostics.get("source_line_count", 0)
-    translated_lines = fit_diagnostics.get("translated_line_count", 0)
-    bbox_area = float(fit_diagnostics.get("bbox_area", 0.0))
-    translated_density = float(fit_diagnostics.get("translated_chars_per_1000pt2", 0.0))
-    flags = set(fit_diagnostics.get("flags", []))
+    context = _analyze_ocr_rendering_context(
+        source_text=source_text,
+        translated_text=translated_text,
+        fit_risk=fit_risk,
+        fit_diagnostics=fit_diagnostics,
+    )
+
+    translated_len = context["translated_len"]
+    source_lines = context["source_lines"]
+    translated_lines = context["translated_lines"]
+    bbox_area = context["bbox_area"]
+    translated_density = context["translated_density"]
+    flags = context["flags"]
 
     if translated_len == 0 or "missing_bbox" in flags or bbox_area <= 0:
         return "ocr_review_required"
