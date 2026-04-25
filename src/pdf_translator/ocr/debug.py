@@ -852,6 +852,31 @@ def _build_fit_diagnostics(
         "flags": flags,
     }
 
+def _choose_ocr_apply_strategy(
+    source_text: str,
+    translated_text: str,
+    fit_risk: str,
+    fit_diagnostics: dict[str, Any],
+) -> str:
+    source_len = len(source_text.replace("\n", " ").strip())
+    translated_len = len(translated_text.replace("\n", " ").strip())
+    source_lines = fit_diagnostics.get("source_line_count", 0)
+    translated_lines = fit_diagnostics.get("translated_line_count", 0)
+    flags = set(fit_diagnostics.get("flags", []))
+
+    if translated_len == 0 or "missing_bbox" in flags:
+        return "ocr_review_required"
+
+    if fit_risk == "high":
+        return "ocr_side_annotation"
+
+    if source_len <= 80 and translated_len <= 110 and source_lines <= 2 and translated_lines <= 2:
+        return "ocr_overlay_candidate"
+
+    if source_len <= 140 and translated_len <= 180 and fit_risk == "low":
+        return "ocr_overlay_candidate"
+
+    return "ocr_side_annotation"
 
 def build_fusion_replacement_plan(
     fusion_translation_preview_report: dict[str, Any],
@@ -873,7 +898,8 @@ def build_fusion_replacement_plan(
             fit_diagnostics = _build_fit_diagnostics(source_text, translated_text, bbox)
 
             if source_kind == "ocr":
-                apply_strategy = "ocr_overlay_pending"
+                fit_risk = _estimate_fusion_fit_risk(source_text, translated_text, source_kind)
+                apply_strategy = _choose_ocr_apply_strategy(source_text, translated_text, fit_risk, fit_diagnostics)
             else:
                 apply_strategy = "native_overlay_candidate"
             apply_strategy_summary[apply_strategy] = apply_strategy_summary.get(apply_strategy, 0) + 1
@@ -1064,7 +1090,7 @@ def render_fusion_overlay_diagnostics(
                 total_native_applied += 1
                 continue
 
-            if strategy == "ocr_overlay_pending":
+            if strategy in {"ocr_overlay_candidate", "ocr_side_annotation", "ocr_review_required"}:
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1

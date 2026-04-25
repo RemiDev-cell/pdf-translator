@@ -381,14 +381,14 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
     assert plan["total_replacements"] == 2
     assert plan["apply_strategy_summary"] == {
         "native_overlay_candidate": 1,
-        "ocr_overlay_pending": 1,
+        "ocr_overlay_candidate": 1,
     }
     assert plan["pages"][0]["replacements"][0]["fit_risk"] == "low"
     assert plan["pages"][0]["replacements"][1]["fit_risk"] == "low"
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["bbox_area"] == 4400
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["flags"] == []
     assert "P1N0 [native/translated]" in text
-    assert "strategy=ocr_overlay_pending" in text
+    assert "strategy=ocr_overlay_candidate" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -420,7 +420,7 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
                     {
                         "segment_id": "P1O0",
                         "source_kind": "ocr",
-                        "apply_strategy": "ocr_overlay_pending",
+                        "apply_strategy": "ocr_overlay_candidate",
                         "status": "translated",
                         "fit_risk": "review",
                         "overflow_ratio": 1.0,
