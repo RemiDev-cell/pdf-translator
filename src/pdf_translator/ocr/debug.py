@@ -865,16 +865,18 @@ def _choose_ocr_apply_strategy(
     if translated_len == 0 or "missing_bbox" in flags or bbox_area <= 0:
         return "ocr_review_required"
 
-    if "dense_text_for_region" in flags or translated_density > 18.0:
+    # Large OCR text zones are primary content blocks, not side notes.
+    if bbox_area >= 35000 and translated_len <= 1200 and translated_density <= 18.0:
+        return "ocr_overlay_candidate"
+
+    # Small safe OCR regions: labels, buttons, short captions.
+    if translated_len <= 140 and translated_lines <= max(3, source_lines + 1) and translated_density <= 16.0:
+        return "ocr_overlay_candidate"
+
+    if translated_density > 22.0:
         return "ocr_side_annotation"
 
-    if translated_len <= 220 and translated_lines <= max(3, source_lines + 1):
-        return "ocr_overlay_candidate"
-
-    if bbox_area >= 45000 and translated_density <= 14.0 and translated_len <= 900:
-        return "ocr_overlay_candidate"
-
-    if fit_risk in {"low", "medium"} and translated_density <= 14.0:
+    if fit_risk in {"low", "medium"} and translated_density <= 18.0:
         return "ocr_overlay_candidate"
 
     return "ocr_side_annotation"
@@ -1054,6 +1056,9 @@ def render_fusion_overlay_diagnostics(
     total_considered = 0
     total_native_applied = 0
     total_ocr_annotated = 0
+    total_ocr_overlay_applied = 0
+    total_ocr_side_annotated = 0
+    total_ocr_review_required = 0
     total_skipped = 0
     ocr_recommendation_summary: dict[str, int] = {}
 
@@ -1100,6 +1105,13 @@ def render_fusion_overlay_diagnostics(
             if strategy == "ocr_overlay_candidate" and status == "translated":
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+
+                if recommendation == "image_overlay_candidate":
+                    total_ocr_overlay_applied += 1
+                elif recommendation == "side_annotation_recommended":
+                    total_ocr_side_annotated += 1
+                else:
+                    total_ocr_review_required += 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 translated_text = replacement.get("translated_text", "")
@@ -1120,6 +1132,13 @@ def render_fusion_overlay_diagnostics(
             if strategy in {"ocr_side_annotation", "ocr_review_required"}:
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+
+                if recommendation == "image_overlay_candidate":
+                    total_ocr_overlay_applied += 1
+                elif recommendation == "side_annotation_recommended":
+                    total_ocr_side_annotated += 1
+                else:
+                    total_ocr_review_required += 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
                 page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
@@ -1171,6 +1190,9 @@ def render_fusion_overlay_diagnostics(
         "total_considered_replacements": total_considered,
         "total_native_applied": total_native_applied,
         "total_ocr_annotated": total_ocr_annotated,
+        "total_ocr_overlay_applied": total_ocr_overlay_applied,
+        "total_ocr_side_annotated": total_ocr_side_annotated,
+        "total_ocr_review_required": total_ocr_review_required,
         "ocr_recommendation_summary": ocr_recommendation_summary,
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),

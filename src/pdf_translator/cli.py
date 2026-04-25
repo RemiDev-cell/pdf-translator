@@ -616,7 +616,7 @@ def document_preview(
     pages: str = "1",
     backend: Optional[str] = None,
 ) -> None:
-    """Génère une preview multi-pages de revue: overlay natif sûr, OCR annoté."""
+    """Génère un PDF de revue traduit, lisible et inspectable."""
     configure_logging()
     selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
@@ -630,74 +630,6 @@ def document_preview(
         artifact_stem=f"{pdf_path.stem}_document_preview",
     )
 
-    print("[bold]Document preview complete[/bold]")
-    _print_page_preview_result(result)
-
-
-@app.command()
-def ocr_experiment(
-    pdf_path: Path,
-    pages: Optional[str] = None,
-    backend: Optional[str] = None,
-) -> None:
-    """Execute toute la chaine OCR experimentale et ecrit les artefacts de debug."""
-    configure_logging()
-    selected_pages = _parse_pages_arg(pages) if pages else None
-    document = extract_document(pdf_path)
-    result = run_ocr_experiment(
-        pdf_path=pdf_path,
-        document_ir=document.model_dump(),
-        output_dir=settings.debug_dir,
-        translate_text_fn=translate_text,
-        selected_pages=selected_pages,
-        backend=backend,
-    )
-    paths = result["paths"]
-
-    print("[bold]OCR experiment complete[/bold]")
-    print(ocr_candidate_report_to_text(result["ocr_candidate_report"]))
-    print(ocr_review_report_to_text(result["ocr_review"]))
-    print(native_ocr_fusion_plan_to_text(result["fusion_plan"]))
-    print(fusion_replacement_plan_to_text(result["fusion_replacement_plan"]))
-    print(ocr_overlay_strategy_report_to_text(result["ocr_strategy_report"]))
-    print(fusion_overlay_diagnostics_summary_to_text(result["diagnostics_summary"]))
-    print(f"[green]OCR candidate report:[/green] {paths['ocr_candidate_json']} / {paths['ocr_candidate_text']}")
-    print(f"[green]OCR manifest:[/green] {paths['manifest']}")
-    print(f"[green]OCR review:[/green] {paths['ocr_review_json']} / {paths['ocr_review_text']}")
-    print(f"[green]Fusion review:[/green] {paths['fusion_review_json']} / {paths['fusion_review_text']}")
-    print(f"[green]Fusion plan:[/green] {paths['fusion_plan_json']} / {paths['fusion_plan_text']}")
-    print(f"[green]Fusion translation preview:[/green] {paths['fusion_translation_json']} / {paths['fusion_translation_text']}")
-    print(f"[green]Fusion replacement plan:[/green] {paths['fusion_replacement_json']} / {paths['fusion_replacement_text']}")
-    print(f"[green]OCR overlay strategy:[/green] {paths['ocr_strategy_json']} / {paths['ocr_strategy_text']}")
-    print(f"[green]OCR page translation preview:[/green] {paths['page_translation_json']} / {paths['page_translation_text']}")
-    print(f"[green]Fusion overlay diagnostics:[/green] {paths['diagnostics_pdf']} / {paths['diagnostics_summary']}")
-    if paths["crop_paths"]:
-        print(f"[green]OCR crops generated:[/green] {len(paths['crop_paths'])}")
-    if paths["diagnostic_images"]:
-        print(f"[green]Diagnostic images generated:[/green] {len(paths['diagnostic_images'])}")
-
-
-@app.command()
-def document_preview(
-    pdf_path: Path,
-    pages: Optional[str] = None,
-    backend: Optional[str] = None,
-) -> None:
-    """Génère un PDF de revue traduit, lisible et inspectable."""
-    configure_logging()
-
-    selected_pages = _parse_pages_arg(pages) if pages else None
-    document = extract_document(pdf_path)
-
-    result = run_ocr_experiment(
-        pdf_path=pdf_path,
-        document_ir=document.model_dump(),
-        output_dir=settings.debug_dir,
-        translate_text_fn=translate_text,
-        selected_pages=selected_pages,
-        backend=backend,
-    )
-
     paths = result["paths"]
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -709,9 +641,12 @@ def document_preview(
     shutil.copy2(paths["diagnostics_summary"], preview_summary_path)
     shutil.copy2(paths["ocr_strategy_text"], preview_strategy_path)
 
-    print("Document preview complete")
-    print(f"Preview PDF: {preview_pdf_path}")
-    print(f"Summary: {preview_summary_path}")
-    print(f"OCR strategy: {preview_strategy_path}")
+    print("[bold]Document preview complete[/bold]")
+    print(f"[green]Preview PDF:[/green] {preview_pdf_path}")
+    print(f"[green]Summary:[/green] {preview_summary_path}")
+    print(f"[green]OCR strategy:[/green] {preview_strategy_path}")
+    _print_page_preview_result(result)
+
+
 if __name__ == "__main__":
     app()
