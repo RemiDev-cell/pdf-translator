@@ -337,6 +337,18 @@ def _truncate_preview(text: str, limit: int = 220) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
+def _normalize_native_extraction_artifacts(text: str) -> str:
+    normalized_lines = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        leading = line[: len(line) - len(stripped)]
+        if stripped.startswith("? ") and stripped.count("?") == 1:
+            normalized_lines.append(f"{leading}- {stripped[2:]}")
+            continue
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines)
+
+
 def _split_long_text_by_words(text: str, max_chars: int) -> list[str]:
     chunks: list[str] = []
     current_words: list[str] = []
@@ -444,7 +456,7 @@ def build_native_ocr_fusion_report(
         ocr_page = ocr_pages.get(page_number, {})
         native_regions = []
         for candidate in native_page.get("candidates", []):
-            candidate_text = candidate.get("text", "")
+            candidate_text = _normalize_native_extraction_artifacts(candidate.get("text", ""))
             preview = _truncate_preview(candidate_text)
             native_regions.append(
                 {
@@ -452,7 +464,13 @@ def build_native_ocr_fusion_report(
                     "role": candidate.get("role", "content"),
                     "line_count": candidate.get("line_count", 0),
                     "bbox": candidate.get("bbox", {}),
-                    "lines": candidate.get("lines", []),
+                    "lines": [
+                        {
+                            **line,
+                            "text": _normalize_native_extraction_artifacts(str(line.get("text", ""))),
+                        }
+                        for line in candidate.get("lines", [])
+                    ],
                     "text": candidate_text,
                     "preview": preview,
                 }
@@ -467,6 +485,8 @@ def build_native_ocr_fusion_report(
                     "quality": region.get("quality", "unknown"),
                     "ocr_backend": region.get("ocr_backend", "unknown"),
                     "word_count": region.get("word_count", 0),
+                    "edge_clipping_detected": bool(region.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": region.get("bbox", {}),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
@@ -501,9 +521,12 @@ def build_native_ocr_fusion_report(
                     "quality": region.get("quality", "unknown"),
                     "ocr_backend": region.get("ocr_backend", "unknown"),
                     "word_count": region.get("word_count", 0),
+                    "edge_clipping_detected": bool(region.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": region.get("bbox", {}),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
+                    "ocr_layout": region.get("ocr_layout", []),
                 }
             )
         total_ocr_regions += len(ocr_regions)
@@ -692,6 +715,8 @@ def _looks_like_native_table_row(text: str) -> bool:
     cells = [cell.strip() for cell in text.splitlines() if cell.strip()]
     if len(cells) < 2:
         return False
+    if len(text) > 220 or any(len(cell) > 80 for cell in cells):
+        return False
 
     numeric_cells = sum(1 for cell in cells if any(char.isdigit() for char in cell))
     if numeric_cells >= 1 and len(cells) >= 2:
@@ -809,6 +834,8 @@ def build_native_ocr_fusion_plan(
                     "ocr_backend": ocr_region.get("ocr_backend", "unknown"),
                     "ocr_status": ocr_region.get("ocr_status", "missing"),
                     "quality": ocr_region.get("quality", "unknown"),
+                    "edge_clipping_detected": bool(ocr_region.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(ocr_region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": ocr_region.get("bbox", {}),
                     "ocr_layout": ocr_region.get("ocr_layout", []),
                     "translate": should_translate,
@@ -949,6 +976,8 @@ def build_fusion_translation_preview_report(
                     "role": segment.get("role", "content"),
                     "bbox": segment.get("bbox", {}),
                     "ocr_layout": segment.get("ocr_layout", []),
+                    "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
                 }
             )
 
@@ -1181,6 +1210,8 @@ def _choose_ocr_apply_strategy(
 
     if translated_len == 0 or "missing_bbox" in flags or bbox_area <= 0:
         return "ocr_review_required"
+    if "edge_clipping_detected" in flags:
+        return "ocr_review_required"
 
     # Large OCR text zones are primary content blocks, not side notes.
     if bbox_area >= 35000 and translated_len <= 1200 and translated_density <= 18.0:
@@ -1219,6 +1250,12 @@ def build_fusion_replacement_plan(
             fit_diagnostics = _build_fit_diagnostics(source_text, translated_text, bbox)
 
             if source_kind == "ocr":
+                edge_clipping_detected = bool(segment.get("edge_clipping_detected", False))
+                edge_clipping_line_count = int(segment.get("edge_clipping_line_count", 0) or 0)
+                if edge_clipping_detected:
+                    fit_diagnostics["flags"] = sorted(
+                        set(fit_diagnostics.get("flags", [])) | {"edge_clipping_detected"}
+                    )
                 fit_risk = _estimate_fusion_fit_risk(source_text, translated_text, source_kind)
                 decision = _build_ocr_strategy_decision(
                     source_text=source_text,
@@ -1243,6 +1280,8 @@ def build_fusion_replacement_plan(
                     "translated_text": translated_text,
                     "bbox": bbox,
                     "ocr_layout": segment.get("ocr_layout", []),
+                    "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
                     "status": segment.get("status", "missing"),
                     "source_length": source_len,
                     "translated_length": translated_len,
@@ -1332,19 +1371,37 @@ def _draw_diagnostic_note(
     anchor_rect: fitz.Rect,
     text: str,
 ) -> None:
-    note_width = min(220.0, max(120.0, page.rect.width * 0.32))
-    note_height = 92.0
+    note_width = min(260.0, max(150.0, page.rect.width * 0.38))
+    note_height = 118.0
     x0 = min(max(12.0, anchor_rect.x1 + 10.0), page.rect.width - note_width - 12.0)
     y0 = min(max(12.0, anchor_rect.y0), page.rect.height - note_height - 12.0)
     note_rect = fitz.Rect(x0, y0, x0 + note_width, y0 + note_height)
     page.draw_rect(note_rect, color=(1.0, 0.55, 0.0), fill=(1.0, 0.96, 0.86), width=0.8)
-    page.insert_textbox(
-        note_rect + (5, 5, -5, -5),
+    text_rect = note_rect + (5, 5, -5, -5)
+    font_size = _fit_ocr_textbox_font_size(
+        page,
+        text_rect,
         text,
-        fontsize=7.2,
+        min_size=5.0,
+        max_size=7.2,
+        color=(0.2, 0.12, 0.0),
+    )
+    overflow = page.insert_textbox(
+        text_rect,
+        text,
+        fontsize=font_size,
         fontname="helv",
         color=(0.2, 0.12, 0.0),
     )
+    if overflow < 0:
+        fallback_lines = text.splitlines()[:5]
+        page.insert_textbox(
+            text_rect,
+            "\n".join(fallback_lines),
+            fontsize=5.0,
+            fontname="helv",
+            color=(0.2, 0.12, 0.0),
+        )
 
 
 def _format_ocr_diagnostic_note(
@@ -1362,7 +1419,7 @@ def _format_ocr_diagnostic_note(
         f"risk={replacement.get('fit_risk')} ratio={replacement.get('overflow_ratio', 1.0)}\n"
         f"reason={reason_text}\n"
         f"flags={flag_text}\n"
-        f"{_truncate_preview(replacement.get('translated_text', ''), 220)}"
+        f"{_truncate_preview(replacement.get('translated_text', ''), 120)}"
     )
 
 
@@ -2036,6 +2093,11 @@ def _recommend_ocr_overlay_strategy(replacement: dict[str, Any]) -> tuple[str, l
         return "manual_review", ["empty_translation"]
     if _bbox_area(bbox) <= 0:
         return "manual_review", ["missing_bbox"]
+    if replacement.get("edge_clipping_detected") or "edge_clipping_detected" in diagnostic_flags:
+        return "manual_review", [
+            "edge_clipping_detected",
+            f"edge_clipping_lines={replacement.get('edge_clipping_line_count', 0)}",
+        ]
 
     if fit_risk == "low" and overflow_ratio <= 1.25 and len(translated_text) <= 180:
         reasons.append("translation_size_close_to_source")
@@ -2079,6 +2141,8 @@ def build_ocr_overlay_strategy_report(
                     "overflow_ratio": replacement.get("overflow_ratio", 1.0),
                     "fit_diagnostics": replacement.get("fit_diagnostics", {}),
                     "bbox": replacement.get("bbox", {}),
+                    "edge_clipping_detected": bool(replacement.get("edge_clipping_detected", False)),
+                    "edge_clipping_line_count": int(replacement.get("edge_clipping_line_count", 0) or 0),
                     "recommendation": recommendation,
                     "reasons": reasons,
                     "translated_preview": _truncate_preview(replacement.get("translated_text", ""), 220),

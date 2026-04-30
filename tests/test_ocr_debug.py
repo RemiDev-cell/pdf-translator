@@ -390,6 +390,86 @@ def test_build_native_ocr_fusion_plan_skips_native_table_rows() -> None:
     assert by_text["Licence pedagogique annuelle\n3\nu\n120,00\n360,00"]["role"] == "table_row"
 
 
+def test_build_native_ocr_fusion_plan_does_not_treat_long_numbered_paragraph_as_table() -> None:
+    paragraph = (
+        "Contrairement a une opinion repandue, le Lorem Ipsum n'est pas simplement du texte\n"
+        "aleatoire. Il trouve ses racines dans une oeuvre de la litterature latine\n"
+        "classique datant de 45 av. J.-C. Un professeur a etudie ce passage."
+    )
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [
+                    {
+                        "block_index": 0,
+                        "role": "content",
+                        "line_count": 3,
+                        "text": paragraph,
+                        "bbox": {"x0": 72, "y0": 120, "x1": 450, "y1": 190},
+                    },
+                ],
+            }
+        ],
+    }
+    ocr_review_report = {"pages": [{"page_number": 1, "route": "native_only", "regions": []}]}
+
+    plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
+    segment = plan["pages"][0]["segments"][0]
+
+    assert segment["role"] == "content"
+    assert segment["translate"] is True
+    assert plan["translatable_segments"] == 1
+
+
+def test_build_native_ocr_fusion_report_normalizes_extracted_bullets() -> None:
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [
+                    {
+                        "block_index": 7,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "? Comprendre la structure PDF",
+                        "bbox": {"x0": 75, "y0": 370, "x1": 228, "y1": 385},
+                        "lines": [
+                            {
+                                "text": "? Comprendre la structure PDF",
+                                "bbox": {"x0": 75, "y0": 370, "x1": 228, "y1": 385},
+                            }
+                        ],
+                    },
+                    {
+                        "block_index": 8,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "? Est-ce une question utile ?",
+                        "bbox": {"x0": 75, "y0": 390, "x1": 228, "y1": 405},
+                        "lines": [
+                            {
+                                "text": "? Est-ce une question utile ?",
+                                "bbox": {"x0": 75, "y0": 390, "x1": 228, "y1": 405},
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    ocr_review_report = {"pages": [{"page_number": 1, "route": "native_only", "regions": []}]}
+
+    report = build_native_ocr_fusion_report(overlay_ready_report, ocr_review_report)
+    regions = report["pages"][0]["native_regions"]
+
+    assert regions[0]["text"] == "- Comprendre la structure PDF"
+    assert regions[0]["lines"][0]["text"] == "- Comprendre la structure PDF"
+    assert regions[1]["text"] == "? Est-ce une question utile ?"
+
+
 
 def test_build_fusion_translation_preview_report_translates_mix_of_native_and_ocr_segments(tmp_path: Path) -> None:
     fusion_plan = {
@@ -484,6 +564,69 @@ def test_build_fusion_translation_preview_report_chunks_long_ocr_text() -> None:
     assert len(seen_chunks) == segment["translation_chunk_count"]
     assert all(len(chunk) <= 520 for chunk in seen_chunks)
     assert "\n\n" in segment["translated_text"]
+
+
+def test_ocr_edge_clipping_is_propagated_to_review_strategy() -> None:
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [],
+            }
+        ],
+    }
+    ocr_review_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "regions": [
+                    {
+                        "candidate_index": 0,
+                        "ocr_status": "ok",
+                        "quality": "usable",
+                        "ocr_backend": "tesseract",
+                        "word_count": 8,
+                        "edge_clipping_detected": True,
+                        "edge_clipping_line_count": 2,
+                        "bbox": {"x0": 20, "y0": 40, "x1": 220, "y1": 180},
+                        "text": "Texte OCR coupe au bord droit",
+                        "preview": "Texte OCR coupe au bord droit",
+                        "ocr_layout": [
+                            {
+                                "line_index": 1,
+                                "text": "Texte OCR coupe au bord droit",
+                                "bbox_px": {"x0": 0, "y0": 0, "x1": 400, "y1": 30},
+                                "touches_right_edge": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    fusion_plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
+    assert fusion_plan["pages"][0]["segments"][0]["edge_clipping_detected"] is True
+    assert fusion_plan["pages"][0]["segments"][0]["edge_clipping_line_count"] == 2
+
+    preview_report = build_fusion_translation_preview_report(fusion_plan, lambda text: f"EN:{text}")
+    preview_segment = preview_report["pages"][0]["segments"][0]
+    assert preview_segment["edge_clipping_detected"] is True
+
+    replacement_plan = build_fusion_replacement_plan(preview_report)
+    replacement = replacement_plan["pages"][0]["replacements"][0]
+    assert replacement["apply_strategy"] == "ocr_review_required"
+    assert replacement["edge_clipping_detected"] is True
+    assert "edge_clipping_detected" in replacement["fit_diagnostics"]["flags"]
+
+    strategy_report = build_ocr_overlay_strategy_report(replacement_plan)
+    decision = strategy_report["pages"][0]["decisions"][0]
+    assert decision["recommendation"] == "manual_review"
+    assert decision["edge_clipping_detected"] is True
+    assert "edge_clipping_detected" in decision["reasons"]
 
 
 def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(tmp_path: Path) -> None:
