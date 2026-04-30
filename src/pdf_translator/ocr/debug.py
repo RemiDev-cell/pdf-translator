@@ -526,6 +526,8 @@ def build_native_ocr_fusion_report(
                     "bbox": region.get("bbox", {}),
                     "crop_bbox": region.get("crop_bbox", region.get("bbox", {})),
                     "crop_padding_pt": region.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": region.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": region.get("crop_constrained_edges", []),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                     "ocr_layout": region.get("ocr_layout", []),
@@ -564,6 +566,8 @@ def build_native_ocr_fusion_report(
                     "bbox": region.get("bbox", {}),
                     "crop_bbox": region.get("crop_bbox", region.get("bbox", {})),
                     "crop_padding_pt": region.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": region.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": region.get("crop_constrained_edges", []),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                     "ocr_layout": region.get("ocr_layout", []),
@@ -879,6 +883,8 @@ def build_native_ocr_fusion_plan(
                     "bbox": ocr_region.get("bbox", {}),
                     "crop_bbox": ocr_region.get("crop_bbox", ocr_region.get("bbox", {})),
                     "crop_padding_pt": ocr_region.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": ocr_region.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": ocr_region.get("crop_constrained_edges", []),
                     "ocr_layout": ocr_region.get("ocr_layout", []),
                     "translate": should_translate,
                     "ocr_parent_candidate_index": ocr_region.get("candidate_index"),
@@ -1019,6 +1025,8 @@ def build_fusion_translation_preview_report(
                     "bbox": segment.get("bbox", {}),
                     "crop_bbox": segment.get("crop_bbox", segment.get("bbox", {})),
                     "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": segment.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": segment.get("crop_constrained_edges", []),
                     "ocr_layout": segment.get("ocr_layout", []),
                     "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
@@ -1325,6 +1333,8 @@ def build_fusion_replacement_plan(
                     "bbox": bbox,
                     "crop_bbox": segment.get("crop_bbox", bbox),
                     "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": segment.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": segment.get("crop_constrained_edges", []),
                     "ocr_layout": segment.get("ocr_layout", []),
                     "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
@@ -1466,6 +1476,57 @@ def _format_ocr_diagnostic_note(
         f"reason={reason_text}\n"
         f"flags={flag_text}\n"
         f"{_truncate_preview(replacement.get('translated_text', ''), 120)}"
+    )
+
+
+def _format_ocr_review_appendix_note(
+    replacement: dict[str, Any],
+    recommendation: str,
+    reasons: list[str],
+) -> str:
+    fit_diagnostics = replacement.get("fit_diagnostics", {})
+    flags = ", ".join(fit_diagnostics.get("flags", [])) or "none"
+    reason_text = ", ".join(reasons) or "review"
+    source_text = replacement.get("source_text", "").strip()
+    translated_text = replacement.get("translated_text", "").strip()
+    crop_edges = ", ".join(replacement.get("crop_constrained_edges", [])) or "none"
+
+    return (
+        f"{replacement.get('segment_id')} OCR manual review\n"
+        f"recommendation={recommendation}\n"
+        f"risk={replacement.get('fit_risk')} ratio={replacement.get('overflow_ratio', 1.0)}\n"
+        f"reason={reason_text}\n"
+        f"flags={flags}\n"
+        f"edge_clipping_lines={replacement.get('edge_clipping_line_count', 0)}\n"
+        f"crop_constrained_edges={crop_edges}\n\n"
+        f"SOURCE OCR\n{_truncate_preview(source_text, 900)}\n\n"
+        f"TRANSLATION\n{_truncate_preview(translated_text, 900)}"
+    )
+
+
+def _draw_ocr_review_appendix_page(
+    doc: fitz.Document,
+    source_page_number: int,
+    replacement: dict[str, Any],
+    recommendation: str,
+    reasons: list[str],
+) -> None:
+    page = doc.new_page(width=595, height=842)
+    page.insert_text(
+        fitz.Point(40, 48),
+        f"OCR review appendix - source page {source_page_number}",
+        fontsize=14,
+        fontname="helv",
+        color=(0.15, 0.09, 0.0),
+    )
+    text_rect = fitz.Rect(40, 72, 555, 802)
+    note = _format_ocr_review_appendix_note(replacement, recommendation, reasons)
+    page.insert_textbox(
+        text_rect,
+        note,
+        fontsize=8.5,
+        fontname="helv",
+        color=(0.05, 0.05, 0.05),
     )
 
 
@@ -1911,6 +1972,7 @@ def render_fusion_overlay_diagnostics(
     total_ocr_review_required = 0
     total_skipped = 0
     ocr_recommendation_summary: dict[str, int] = {}
+    ocr_review_appendix_entries: list[dict[str, Any]] = []
 
     for page_report in fusion_replacement_plan.get("pages", []):
         page_number = int(page_report["page_number"])
@@ -2024,16 +2086,26 @@ def render_fusion_overlay_diagnostics(
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
                 page.insert_text(
                     label_point,
-                    f"{replacement.get('segment_id')} OCR strategy",
+                    f"{replacement.get('segment_id')} OCR {recommendation}",
                     fontsize=8,
                     fontname="helv",
                     color=(1.0, 0.35, 0.0),
                 )
-                _draw_diagnostic_note(
-                    page,
-                    rect,
-                    _format_ocr_diagnostic_note(replacement, recommendation, reasons),
-                )
+                if recommendation == "manual_review":
+                    ocr_review_appendix_entries.append(
+                        {
+                            "page_number": page_number,
+                            "replacement": replacement,
+                            "recommendation": recommendation,
+                            "reasons": reasons,
+                        }
+                    )
+                else:
+                    _draw_diagnostic_note(
+                        page,
+                        rect,
+                        _format_ocr_diagnostic_note(replacement, recommendation, reasons),
+                    )
                 ocr_annotated += 1
                 total_ocr_annotated += 1
                 continue
@@ -2050,6 +2122,15 @@ def render_fusion_overlay_diagnostics(
                 "ocr_recommendations": page_ocr_recommendations,
                 "skipped": skipped,
             }
+        )
+
+    for entry in ocr_review_appendix_entries:
+        _draw_ocr_review_appendix_page(
+            diagnostic_doc,
+            int(entry["page_number"]),
+            entry["replacement"],
+            entry["recommendation"],
+            entry["reasons"],
         )
 
     pdf_output_path = output_dir / f"{stem}.pdf"
@@ -2074,6 +2155,7 @@ def render_fusion_overlay_diagnostics(
         "total_ocr_side_annotated": total_ocr_side_annotated,
         "total_ocr_review_required": total_ocr_review_required,
         "ocr_recommendation_summary": ocr_recommendation_summary,
+        "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),
         "pages": summary_pages,
@@ -2091,6 +2173,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
         f"Total native applied: {summary['total_native_applied']}",
         f"Total OCR annotated: {summary['total_ocr_annotated']}",
         f"OCR recommendations: {json.dumps(summary.get('ocr_recommendation_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
         f"Total skipped: {summary['total_skipped']}",
     ]
 

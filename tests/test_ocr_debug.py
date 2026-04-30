@@ -760,6 +760,63 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
     assert 'OCR recommendations: {"side_annotation_recommended": 1}' in text
 
 
+def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=240, height=240)
+    page.insert_text((24, 42), "Scan text remains visible")
+    doc.save(pdf_path)
+    doc.close()
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_review_required",
+                        "status": "translated",
+                        "fit_risk": "high",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": ["edge_clipping_detected"]},
+                        "edge_clipping_detected": True,
+                        "edge_clipping_line_count": 2,
+                        "crop_constrained_edges": ["right"],
+                        "bbox": {"x0": 10, "y0": 10, "x1": 230, "y1": 230},
+                        "source_text": "Texte OCR coupe au bord droit",
+                        "translated_text": "OCR text clipped on the right edge",
+                    },
+                ],
+            }
+        ],
+    }
+
+    pdf_output_path, summary, image_paths = render_fusion_overlay_diagnostics(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="manual_review_overlay",
+    )
+    text = fusion_overlay_diagnostics_summary_to_text(summary)
+
+    assert pdf_output_path.exists()
+    assert len(image_paths) == 2
+    assert summary["total_ocr_review_required"] == 1
+    assert summary["ocr_recommendation_summary"] == {"manual_review": 1}
+    assert summary["ocr_review_appendix_page_count"] == 1
+    assert "OCR review appendix pages: 1" in text
+    rendered = fitz.open(pdf_output_path)
+    try:
+        assert rendered.page_count == 2
+        assert "OCR manual review" in rendered[1].get_text()
+        assert "crop_constrained_edges=right" in rendered[1].get_text()
+    finally:
+        rendered.close()
+
+
 def test_build_ocr_overlay_strategy_report_recommends_by_size_and_status(tmp_path: Path) -> None:
     plan = {
         "selected_pages": [1],
