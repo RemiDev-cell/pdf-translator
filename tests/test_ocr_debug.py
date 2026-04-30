@@ -245,6 +245,151 @@ def test_build_native_ocr_fusion_plan_marks_translatable_segments(tmp_path: Path
     assert text_path.exists()
 
 
+def test_build_native_ocr_fusion_plan_skips_native_ui_controls() -> None:
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [
+                    {
+                        "block_index": 0,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Nom du demandeur",
+                        "bbox": {"x0": 75, "y0": 119, "x1": 163, "y1": 133},
+                    },
+                    {
+                        "block_index": 1,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Traduction complete",
+                        "bbox": {"x0": 105, "y0": 249, "x1": 196, "y1": 263},
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "OCR uniquement",
+                        "bbox": {"x0": 105, "y0": 269, "x1": 182, "y1": 283},
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Relecture humaine",
+                        "bbox": {"x0": 105, "y0": 289, "x1": 189, "y1": 303},
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Export debug",
+                        "bbox": {"x0": 105, "y0": 309, "x1": 164, "y1": 323},
+                    },
+                    {
+                        "block_index": 5,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Valider",
+                        "bbox": {"x0": 232, "y0": 328, "x1": 269, "y1": 344},
+                    },
+                    {
+                        "block_index": 6,
+                        "role": "content",
+                        "line_count": 2,
+                        "text": "Bloc de commentaire libre: ce texte doit rester contenu principal.",
+                        "bbox": {"x0": 72, "y0": 383, "x1": 419, "y1": 428},
+                    },
+                ],
+            }
+        ],
+    }
+    ocr_review_report = {"pages": [{"page_number": 1, "route": "native_only", "regions": []}]}
+
+    plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
+    segments = plan["pages"][0]["segments"]
+    by_text = {segment["text"]: segment for segment in segments}
+
+    assert plan["total_segments"] == 7
+    assert plan["translatable_segments"] == 2
+    assert by_text["Nom du demandeur"]["translate"] is True
+    assert by_text["Bloc de commentaire libre: ce texte doit rester contenu principal."]["translate"] is True
+    for text in [
+        "Traduction complete",
+        "OCR uniquement",
+        "Relecture humaine",
+        "Export debug",
+        "Valider",
+    ]:
+        assert by_text[text]["translate"] is False
+        assert by_text[text]["role"] == "ui_control"
+
+
+def test_build_native_ocr_fusion_plan_skips_native_table_rows() -> None:
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [
+                    {
+                        "block_index": 0,
+                        "role": "content",
+                        "line_count": 1,
+                        "text": "Facture avec tableau dense",
+                        "bbox": {"x0": 72, "y0": 31, "x1": 333, "y1": 58},
+                    },
+                    {
+                        "block_index": 1,
+                        "role": "content",
+                        "line_count": 5,
+                        "text": "Designation\nQuantite\nUnite\nPrix HT\nTotal HT",
+                        "bbox": {"x0": 59, "y0": 173, "x1": 545, "y1": 186},
+                        "lines": [
+                            {"text": "Designation", "bbox": {"x0": 59, "y0": 173, "x1": 111, "y1": 186}},
+                            {"text": "Quantite", "bbox": {"x0": 269, "y0": 173, "x1": 306, "y1": 186}},
+                            {"text": "Unite", "bbox": {"x0": 344, "y0": 173, "x1": 367, "y1": 186}},
+                            {"text": "Prix HT", "bbox": {"x0": 419, "y0": 173, "x1": 451, "y1": 186}},
+                            {"text": "Total HT", "bbox": {"x0": 509, "y0": 173, "x1": 545, "y1": 186}},
+                        ],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "line_count": 5,
+                        "text": "Licence pedagogique annuelle\n3\nu\n120,00\n360,00",
+                        "bbox": {"x0": 59, "y0": 201, "x1": 537, "y1": 214},
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "content",
+                        "line_count": 3,
+                        "text": "Le pipeline doit conserver la structure tabulaire.",
+                        "bbox": {"x0": 72, "y0": 440, "x1": 432, "y1": 483},
+                    },
+                ],
+            }
+        ],
+    }
+    ocr_review_report = {"pages": [{"page_number": 1, "route": "native_only", "regions": []}]}
+
+    plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
+    segments = plan["pages"][0]["segments"]
+    by_text = {segment["text"]: segment for segment in segments}
+
+    assert plan["total_segments"] == 8
+    assert plan["translatable_segments"] == 7
+    assert by_text["Facture avec tableau dense"]["translate"] is True
+    assert by_text["Le pipeline doit conserver la structure tabulaire."]["translate"] is True
+    for text in ["Designation", "Quantite", "Unite", "Prix HT", "Total HT"]:
+        assert by_text[text]["translate"] is True
+        assert by_text[text]["role"] == "table_header_cell"
+
+    assert by_text["Licence pedagogique annuelle\n3\nu\n120,00\n360,00"]["translate"] is False
+    assert by_text["Licence pedagogique annuelle\n3\nu\n120,00\n360,00"]["role"] == "table_row"
+
+
 
 def test_build_fusion_translation_preview_report_translates_mix_of_native_and_ocr_segments(tmp_path: Path) -> None:
     fusion_plan = {

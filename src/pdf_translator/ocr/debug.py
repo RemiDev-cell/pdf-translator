@@ -452,6 +452,7 @@ def build_native_ocr_fusion_report(
                     "role": candidate.get("role", "content"),
                     "line_count": candidate.get("line_count", 0),
                     "bbox": candidate.get("bbox", {}),
+                    "lines": candidate.get("lines", []),
                     "text": candidate_text,
                     "preview": preview,
                 }
@@ -674,6 +675,61 @@ def _order_native_regions_for_reading(native_regions: list[dict[str, Any]]) -> l
         + sorted(footnotes, key=lambda r: (_bbox_float(r, "y0"), _bbox_float(r, "x0")))
     )
 
+
+def _is_native_ui_control_text(text: str) -> bool:
+    normalized = " ".join(text.lower().split()).strip(" :")
+    native_ui_controls = {
+        "traduction complete",
+        "ocr uniquement",
+        "relecture humaine",
+        "export debug",
+        "valider",
+    }
+    return normalized in native_ui_controls
+
+
+def _looks_like_native_table_row(text: str) -> bool:
+    cells = [cell.strip() for cell in text.splitlines() if cell.strip()]
+    if len(cells) < 2:
+        return False
+
+    numeric_cells = sum(1 for cell in cells if any(char.isdigit() for char in cell))
+    if numeric_cells >= 1 and len(cells) >= 2:
+        return True
+
+    normalized_cells = {" ".join(cell.lower().split()) for cell in cells}
+    known_table_headers = {
+        "designation",
+        "désignation",
+        "quantite",
+        "quantité",
+        "unite",
+        "unité",
+        "prix ht",
+        "total ht",
+    }
+    return len(normalized_cells & known_table_headers) >= 3
+
+
+def _looks_like_native_table_header(text: str) -> bool:
+    cells = [cell.strip() for cell in text.splitlines() if cell.strip()]
+    if len(cells) < 2:
+        return False
+
+    normalized_cells = {" ".join(cell.lower().split()) for cell in cells}
+    known_table_headers = {
+        "designation",
+        "désignation",
+        "quantite",
+        "quantité",
+        "unite",
+        "unité",
+        "prix ht",
+        "total ht",
+    }
+    return len(normalized_cells & known_table_headers) >= 3
+
+
 def build_native_ocr_fusion_plan(
     overlay_ready_report: dict[str, Any],
     ocr_review_report: dict[str, Any],
@@ -687,18 +743,48 @@ def build_native_ocr_fusion_plan(
         segments: list[dict[str, Any]] = []
 
         for native_region in _order_native_regions_for_reading(page.get("native_regions", [])):
+            native_text = native_region.get("text") or native_region.get("preview", "")
+            is_ui_control = _is_native_ui_control_text(native_text)
+            is_table_row = _looks_like_native_table_row(native_text)
+            is_table_header = _looks_like_native_table_header(native_text)
+            if is_table_header and native_region.get("lines"):
+                for line_index, line in enumerate(native_region.get("lines", []), start=1):
+                    line_text = str(line.get("text", "")).strip()
+                    if not line_text:
+                        continue
+                    segments.append(
+                        {
+                            "segment_id": f"P{page['page_number']}N{native_region['block_index']}L{line_index}",
+                            "source_kind": "native",
+                            "source_ref": f"block:{native_region['block_index']}:line:{line_index}",
+                            "role": "table_header_cell",
+                            "text": line_text,
+                            "bbox": line.get("bbox") or native_region.get("bbox", {}),
+                            "translate": True,
+                        }
+                    )
+                    total_segments += 1
+                    translatable_segments += 1
+                continue
+
+            role = native_region.get("role", "content")
+            if is_ui_control:
+                role = "ui_control"
+            elif is_table_row:
+                role = "table_row"
             segment = {
                 "segment_id": f"P{page['page_number']}N{native_region['block_index']}",
                 "source_kind": "native",
                 "source_ref": f"block:{native_region['block_index']}",
-                "role": native_region.get("role", "content"),
-                "text": native_region.get("text") or native_region.get("preview", ""),
+                "role": role,
+                "text": native_text,
                 "bbox": native_region.get("bbox", {}),
-                "translate": True,
+                "translate": not (is_ui_control or is_table_row),
             }
             segments.append(segment)
             total_segments += 1
-            translatable_segments += 1
+            if segment["translate"]:
+                translatable_segments += 1
 
         for ocr_region in page.get("ocr_regions", []):
             should_translate = ocr_region.get("ocr_status") == "ok" and ocr_region.get("quality") in {"usable", "review"}
@@ -1470,7 +1556,7 @@ def _compute_block_bbox(block_lines, rect, crop_width_px, crop_height_px):
             y0s.append(float(b.get("y0", 0)))
             x1s.append(float(b.get("x1", 0)))
             y1s.append(float(b.get("y1", 0)))
-        except:
+        except (TypeError, ValueError):
             continue
 
     if not x0s:
@@ -1576,6 +1662,7 @@ def _render_ocr_layout_overlay(
 
             if title_rect and not title_rect.is_empty and title_text:
                 title_box = title_rect + (2, 0, -2, 2)
+                page.draw_rect(title_rect + (-1, -1, 1, 3), color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 title_size = _fit_ocr_textbox_font_size(
                     page,
                     title_box,
@@ -1594,6 +1681,7 @@ def _render_ocr_layout_overlay(
 
             if body_rect and not body_rect.is_empty and body_text:
                 text_box = body_rect + (2, 2, -2, -2)
+                page.draw_rect(body_rect + (-1, -1, 1, 1), color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 font_size = _fit_ocr_textbox_font_size(
                     page,
                     text_box,
@@ -1629,6 +1717,7 @@ def _render_ocr_layout_overlay(
                 continue
 
             text_box = block_rect + (2, 2, -2, -2)
+            page.draw_rect(block_rect + (-1, -1, 1, 1), color=(1, 1, 1), fill=(1, 1, 1), width=0)
             font_size = _fit_ocr_textbox_font_size(
                 page,
                 text_box,
@@ -1679,6 +1768,7 @@ def _render_ocr_layout_overlay(
         if not line_text:
             continue
 
+        page.draw_rect(line_rect + (-0.5, -0.5, 0.5, 0.5), color=(1, 1, 1), fill=(1, 1, 1), width=0)
         font_size = max(5.0, min(12.5, line_rect.height * 0.95))
         text_width = fitz.get_text_length(line_text, fontname="helv", fontsize=font_size)
         if text_width > line_rect.width and text_width > 0:
@@ -1740,20 +1830,43 @@ def render_fusion_overlay_diagnostics(
             status = replacement.get("status")
             fit_risk = replacement.get("fit_risk")
 
-            if strategy == "native_overlay_candidate" and status == "translated" and fit_risk in allowed_native_fit_risks:
+            if (
+                strategy == "native_overlay_candidate"
+                and status == "translated"
+                and (
+                    fit_risk in allowed_native_fit_risks
+                    or replacement.get("role") == "table_header_cell"
+                )
+            ):
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 translated_text = replacement.get("translated_text", "")
 
                 approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
                 font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
+                text_box = rect + (2, 2, -2, -2)
+                font_size = _fit_ocr_textbox_font_size(
+                    page,
+                    text_box,
+                    translated_text,
+                    min_size=4.0,
+                    max_size=font_size,
+                )
 
-                page.insert_textbox(
-                    rect + (2, 2, -2, -2),
+                overflow = page.insert_textbox(
+                    text_box,
                     translated_text,
                     fontsize=font_size,
                     fontname="helv",
                     color=(0, 0, 0),
                 )
+                if overflow < 0:
+                    page.insert_text(
+                        fitz.Point(text_box.x0, text_box.y1),
+                        translated_text,
+                        fontsize=font_size,
+                        fontname="helv",
+                        color=(0, 0, 0),
+                    )
                 native_applied += 1
                 total_native_applied += 1
                 continue
@@ -1767,12 +1880,12 @@ def render_fusion_overlay_diagnostics(
                 confidence = decision.get("confidence", "medium")
 
                 if confidence in {"high", "medium"}:
-                    page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
                     rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
 
                     if not rendered_with_layout:
+                        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                         # Conservative OCR block fitting: avoid silent truncation in dense translated OCR regions.
                         text_box = rect + (4, 4, -4, -4)
                         approx_line_count = max(
