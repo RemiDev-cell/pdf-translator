@@ -11,6 +11,7 @@ from pdf_translator.translate.placeholders import protect_text, restore_text
 
 
 DEFAULT_OCR_ZOOM = 2.0
+DEFAULT_OCR_CROP_PADDING_PT = 8.0
 
 
 def write_ocr_candidate_report(
@@ -61,6 +62,7 @@ def render_ocr_candidate_diagnostics(
     output_dir: Path,
     stem: str,
     zoom: float = DEFAULT_OCR_ZOOM,
+    crop_padding_pt: float = DEFAULT_OCR_CROP_PADDING_PT,
 ) -> tuple[Path, list[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(pdf_path)
@@ -81,7 +83,25 @@ def render_ocr_candidate_diagnostics(
                 float(bbox.get("x1", 0.0)),
                 float(bbox.get("y1", 0.0)),
             )
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=rect, alpha=False)
+            requested_crop_rect = rect + (-crop_padding_pt, -crop_padding_pt, crop_padding_pt, crop_padding_pt)
+            crop_rect = requested_crop_rect & page.rect
+            applied_padding = {
+                "left": round(max(0.0, rect.x0 - crop_rect.x0), 2),
+                "top": round(max(0.0, rect.y0 - crop_rect.y0), 2),
+                "right": round(max(0.0, crop_rect.x1 - rect.x1), 2),
+                "bottom": round(max(0.0, crop_rect.y1 - rect.y1), 2),
+            }
+            crop_constrained_edges = [
+                edge
+                for edge, constrained in {
+                    "left": requested_crop_rect.x0 < page.rect.x0,
+                    "top": requested_crop_rect.y0 < page.rect.y0,
+                    "right": requested_crop_rect.x1 > page.rect.x1,
+                    "bottom": requested_crop_rect.y1 > page.rect.y1,
+                }.items()
+                if constrained
+            ]
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=crop_rect, alpha=False)
             image_path = output_dir / f"{stem}_page_{page_number:03d}_ocr_{int(candidate['candidate_index']):03d}.png"
             pixmap.save(image_path)
             image_paths.append(image_path)
@@ -90,6 +110,15 @@ def render_ocr_candidate_diagnostics(
                 {
                     "candidate_index": candidate["candidate_index"],
                     "bbox": candidate.get("bbox", {}),
+                    "crop_bbox": {
+                        "x0": crop_rect.x0,
+                        "y0": crop_rect.y0,
+                        "x1": crop_rect.x1,
+                        "y1": crop_rect.y1,
+                    },
+                    "crop_padding_pt": crop_padding_pt,
+                    "crop_padding_applied_pt": applied_padding,
+                    "crop_constrained_edges": crop_constrained_edges,
                     "area_ratio": candidate.get("area_ratio", 0.0),
                     "reason": candidate.get("reason", "image_block"),
                     "image_path": str(image_path),
@@ -116,6 +145,7 @@ def render_ocr_candidate_diagnostics(
         "pdf_kind": report.get("pdf_kind", "unknown"),
         "total_candidates": report.get("total_candidates", 0),
         "zoom": zoom,
+        "crop_padding_pt": crop_padding_pt,
         "pages": manifest_pages,
     }
 
@@ -136,6 +166,7 @@ def run_ocr_debug_pipeline(
     stem: str,
     zoom: float = DEFAULT_OCR_ZOOM,
     backend: str | None = None,
+    crop_padding_pt: float = DEFAULT_OCR_CROP_PADDING_PT,
 ) -> tuple[Path, list[Path]]:
     manifest_path, image_paths = render_ocr_candidate_diagnostics(
         pdf_path=pdf_path,
@@ -143,6 +174,7 @@ def run_ocr_debug_pipeline(
         output_dir=output_dir,
         stem=stem,
         zoom=zoom,
+        crop_padding_pt=crop_padding_pt,
     )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -257,6 +289,10 @@ def build_ocr_review_report(manifest: dict[str, Any]) -> dict[str, Any]:
                     "detail": candidate.get("ocr_detail", ""),
                     "image_path": candidate.get("image_path", ""),
                     "bbox": candidate.get("bbox", {}),
+                    "crop_bbox": candidate.get("crop_bbox", candidate.get("bbox", {})),
+                    "crop_padding_pt": candidate.get("crop_padding_pt", 0.0),
+                    "crop_padding_applied_pt": candidate.get("crop_padding_applied_pt", {}),
+                    "crop_constrained_edges": candidate.get("crop_constrained_edges", []),
                 }
             )
 
@@ -488,6 +524,8 @@ def build_native_ocr_fusion_report(
                     "edge_clipping_detected": bool(region.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": region.get("bbox", {}),
+                    "crop_bbox": region.get("crop_bbox", region.get("bbox", {})),
+                    "crop_padding_pt": region.get("crop_padding_pt", 0.0),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                     "ocr_layout": region.get("ocr_layout", []),
@@ -524,6 +562,8 @@ def build_native_ocr_fusion_report(
                     "edge_clipping_detected": bool(region.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": region.get("bbox", {}),
+                    "crop_bbox": region.get("crop_bbox", region.get("bbox", {})),
+                    "crop_padding_pt": region.get("crop_padding_pt", 0.0),
                     "text": region.get("text", region.get("preview", "")),
                     "preview": _truncate_preview(region.get("preview", "")),
                     "ocr_layout": region.get("ocr_layout", []),
@@ -837,6 +877,8 @@ def build_native_ocr_fusion_plan(
                     "edge_clipping_detected": bool(ocr_region.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(ocr_region.get("edge_clipping_line_count", 0) or 0),
                     "bbox": ocr_region.get("bbox", {}),
+                    "crop_bbox": ocr_region.get("crop_bbox", ocr_region.get("bbox", {})),
+                    "crop_padding_pt": ocr_region.get("crop_padding_pt", 0.0),
                     "ocr_layout": ocr_region.get("ocr_layout", []),
                     "translate": should_translate,
                     "ocr_parent_candidate_index": ocr_region.get("candidate_index"),
@@ -975,6 +1017,8 @@ def build_fusion_translation_preview_report(
                     "translated_endswith_ellipsis": translated_text.strip().endswith("..."),
                     "role": segment.get("role", "content"),
                     "bbox": segment.get("bbox", {}),
+                    "crop_bbox": segment.get("crop_bbox", segment.get("bbox", {})),
+                    "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
                     "ocr_layout": segment.get("ocr_layout", []),
                     "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
@@ -1279,6 +1323,8 @@ def build_fusion_replacement_plan(
                     "source_text": source_text,
                     "translated_text": translated_text,
                     "bbox": bbox,
+                    "crop_bbox": segment.get("crop_bbox", bbox),
+                    "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
                     "ocr_layout": segment.get("ocr_layout", []),
                     "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
@@ -1689,8 +1735,9 @@ def _render_ocr_layout_overlay(
     if not ocr_layout:
         return False
 
-    crop_width_px = rect.width * DEFAULT_OCR_ZOOM
-    crop_height_px = rect.height * DEFAULT_OCR_ZOOM
+    crop_rect = _rect_from_bbox(replacement.get("crop_bbox", {})) or rect
+    crop_width_px = crop_rect.width * DEFAULT_OCR_ZOOM
+    crop_height_px = crop_rect.height * DEFAULT_OCR_ZOOM
     if crop_width_px <= 0 or crop_height_px <= 0:
         return False
 
@@ -1713,9 +1760,9 @@ def _render_ocr_layout_overlay(
             if not body_text:
                 body_text = translated_text.replace(title_text, "", 1).strip()
 
-            title_rect = _compute_block_bbox(blocks[0], rect, crop_width_px, crop_height_px)
+            title_rect = _compute_block_bbox(blocks[0], crop_rect, crop_width_px, crop_height_px)
             body_lines = [line for block in blocks[1:] for line in block]
-            body_rect = _compute_block_bbox(body_lines, rect, crop_width_px, crop_height_px)
+            body_rect = _compute_block_bbox(body_lines, crop_rect, crop_width_px, crop_height_px)
 
             if title_rect and not title_rect.is_empty and title_text:
                 title_box = title_rect + (2, 0, -2, 2)
@@ -1761,7 +1808,7 @@ def _render_ocr_layout_overlay(
         line_offset = 0
 
         for block in blocks:
-            block_rect = _compute_block_bbox(block, rect, crop_width_px, crop_height_px)
+            block_rect = _compute_block_bbox(block, crop_rect, crop_width_px, crop_height_px)
             if not block_rect or block_rect.is_empty:
                 line_offset += len(block)
                 continue
@@ -1811,11 +1858,11 @@ def _render_ocr_layout_overlay(
             continue
 
         line_rect = fitz.Rect(
-            rect.x0 + (x0 / crop_width_px) * rect.width,
-            rect.y0 + (y0 / crop_height_px) * rect.height,
-            rect.x0 + (x1 / crop_width_px) * rect.width,
-            rect.y0 + (y1 / crop_height_px) * rect.height,
-        ) & rect
+            crop_rect.x0 + (x0 / crop_width_px) * crop_rect.width,
+            crop_rect.y0 + (y0 / crop_height_px) * crop_rect.height,
+            crop_rect.x0 + (x1 / crop_width_px) * crop_rect.width,
+            crop_rect.y0 + (y1 / crop_height_px) * crop_rect.height,
+        ) & page.rect
         if line_rect.is_empty:
             continue
 

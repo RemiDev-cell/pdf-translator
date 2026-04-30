@@ -66,11 +66,24 @@ def test_run_ocr_debug_pipeline_writes_manifest_pngs_and_mock_ocr(tmp_path: Path
 
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     assert manifest['total_candidates'] == 1
+    candidate = manifest['pages'][0]['candidates'][0]
     assert manifest['pages'][0]['candidates'][0]['pixel_width'] > 0
     assert manifest['pages'][0]['candidates'][0]['pixel_height'] > 0
-    assert manifest['pages'][0]['candidates'][0]['ocr_backend'] == 'mock'
-    assert manifest['pages'][0]['candidates'][0]['ocr_status'] == 'ok'
-    assert '[MOCK OCR]' in manifest['pages'][0]['candidates'][0]['ocr_text']
+    assert candidate['ocr_backend'] == 'mock'
+    assert candidate['ocr_status'] == 'ok'
+    assert '[MOCK OCR]' in candidate['ocr_text']
+    assert candidate['crop_padding_pt'] == 8.0
+    assert candidate['crop_bbox']['x0'] < candidate['bbox']['x0']
+    assert candidate['crop_bbox']['y0'] < candidate['bbox']['y0']
+    assert candidate['crop_bbox']['x1'] > candidate['bbox']['x1']
+    assert candidate['crop_bbox']['y1'] > candidate['bbox']['y1']
+    assert candidate['crop_padding_applied_pt'] == {
+        "left": 8.0,
+        "top": 8.0,
+        "right": 8.0,
+        "bottom": 8.0,
+    }
+    assert candidate['crop_constrained_edges'] == []
 
 
 
@@ -592,6 +605,8 @@ def test_ocr_edge_clipping_is_propagated_to_review_strategy() -> None:
                         "edge_clipping_detected": True,
                         "edge_clipping_line_count": 2,
                         "bbox": {"x0": 20, "y0": 40, "x1": 220, "y1": 180},
+                        "crop_bbox": {"x0": 12, "y0": 32, "x1": 228, "y1": 188},
+                        "crop_padding_pt": 8.0,
                         "text": "Texte OCR coupe au bord droit",
                         "preview": "Texte OCR coupe au bord droit",
                         "ocr_layout": [
@@ -611,15 +626,18 @@ def test_ocr_edge_clipping_is_propagated_to_review_strategy() -> None:
     fusion_plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
     assert fusion_plan["pages"][0]["segments"][0]["edge_clipping_detected"] is True
     assert fusion_plan["pages"][0]["segments"][0]["edge_clipping_line_count"] == 2
+    assert fusion_plan["pages"][0]["segments"][0]["crop_bbox"]["x0"] == 12
 
     preview_report = build_fusion_translation_preview_report(fusion_plan, lambda text: f"EN:{text}")
     preview_segment = preview_report["pages"][0]["segments"][0]
     assert preview_segment["edge_clipping_detected"] is True
+    assert preview_segment["crop_padding_pt"] == 8.0
 
     replacement_plan = build_fusion_replacement_plan(preview_report)
     replacement = replacement_plan["pages"][0]["replacements"][0]
     assert replacement["apply_strategy"] == "ocr_review_required"
     assert replacement["edge_clipping_detected"] is True
+    assert replacement["crop_bbox"]["x1"] == 228
     assert "edge_clipping_detected" in replacement["fit_diagnostics"]["flags"]
 
     strategy_report = build_ocr_overlay_strategy_report(replacement_plan)
