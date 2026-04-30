@@ -16,3 +16,6 @@ data/input/Séance 2 TD1 hétérogénéité plasmide REPONSES.pdf
 src/*.egg-info/
 
 data/input/*REPONSES.pdf
+data/output/
+data/debug/
+data/eval/
