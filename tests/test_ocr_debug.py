@@ -436,6 +436,40 @@ def test_build_native_ocr_fusion_plan_does_not_treat_long_numbered_paragraph_as_
     assert plan["translatable_segments"] == 1
 
 
+def test_build_native_ocr_fusion_plan_does_not_treat_bullet_list_as_table() -> None:
+    bullet_list = (
+        "- Temperature moyenne du reacteur: 37.5 C\n"
+        "- Concentration de glucose: 4.2 mmol/L\n"
+        "- Adresse de contact: support.lab@example.org\n"
+        "- Le sous-systeme Sensor Bridge reste deja nomme en anglais"
+    )
+    overlay_ready_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "candidates": [
+                    {
+                        "block_index": 0,
+                        "role": "content",
+                        "line_count": 4,
+                        "text": bullet_list,
+                        "bbox": {"x0": 72, "y0": 260, "x1": 510, "y1": 330},
+                    },
+                ],
+            }
+        ],
+    }
+    ocr_review_report = {"pages": [{"page_number": 1, "route": "native_only", "regions": []}]}
+
+    plan = build_native_ocr_fusion_plan(overlay_ready_report, ocr_review_report)
+    segment = plan["pages"][0]["segments"][0]
+
+    assert segment["role"] == "content"
+    assert segment["translate"] is True
+    assert plan["translatable_segments"] == 1
+
+
 def test_build_native_ocr_fusion_report_normalizes_extracted_bullets() -> None:
     overlay_ready_report = {
         "selected_pages": [1],

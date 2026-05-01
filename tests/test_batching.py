@@ -142,3 +142,18 @@ def test_clean_text_response_removes_prompt_noise() -> None:
     )
 
     assert clean_text_response(response) == "Hello world"
+
+
+def test_clean_text_response_preserves_translated_bullets() -> None:
+    response = (
+        "Translation:\n"
+        "- Average reactor temperature: 37.5 C\n"
+        "- Glucose concentration: 4.2 mmol/L\n"
+        "- Contact address: support.lab@example.org"
+    )
+
+    assert clean_text_response(response) == (
+        "- Average reactor temperature: 37.5 C\n"
+        "- Glucose concentration: 4.2 mmol/L\n"
+        "- Contact address: support.lab@example.org"
+    )

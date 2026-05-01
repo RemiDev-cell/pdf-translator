@@ -755,9 +755,27 @@ def _is_native_ui_control_text(text: str) -> bool:
     return normalized in native_ui_controls
 
 
+def _looks_like_native_list(text: str) -> bool:
+    cells = [cell.strip() for cell in text.splitlines() if cell.strip()]
+    if len(cells) < 2:
+        return False
+
+    list_marked = 0
+    for cell in cells:
+        if cell.startswith(("- ", "* ", "• ")):
+            list_marked += 1
+            continue
+        if len(cell) >= 3 and cell[0].isdigit() and cell[1] in {".", ")"} and cell[2] == " ":
+            list_marked += 1
+
+    return list_marked >= max(2, len(cells) - 1)
+
+
 def _looks_like_native_table_row(text: str) -> bool:
     cells = [cell.strip() for cell in text.splitlines() if cell.strip()]
     if len(cells) < 2:
+        return False
+    if _looks_like_native_list(text):
         return False
     if len(text) > 220 or any(len(cell) > 80 for cell in cells):
         return False

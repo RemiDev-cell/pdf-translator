@@ -15,6 +15,15 @@ IGNORED_TEXT_RESPONSE_LINES = {
     "```",
 }
 
+IGNORED_TEXT_RESPONSE_PREFIXES = (
+    "- Return only",
+    "- No title",
+    "- No explanation",
+    "- No markdown",
+    "- Preserve placeholders",
+    "- Keep labels",
+)
+
 
 def translate_text_mock(text: str) -> str:
     return f"[EN] {text}"
@@ -52,7 +61,7 @@ def clean_text_response(response_text: str) -> str:
             continue
         if line.startswith("Rules:"):
             continue
-        if line.startswith("- "):
+        if any(line.startswith(prefix) for prefix in IGNORED_TEXT_RESPONSE_PREFIXES):
             continue
         cleaned_lines.append(raw_line)
 
