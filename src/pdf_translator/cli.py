@@ -53,7 +53,11 @@ from pdf_translator.ocr.debug import (
 )
 from pdf_translator.ocr.experiment import run_ocr_experiment
 from pdf_translator.extract.pymupdf_extract import extract_document
-from pdf_translator.pipeline import run_extract_only
+from pdf_translator.pipeline import (
+    run_document_preview,
+    run_extract_only,
+    run_native_overlay_preview,
+)
 from pdf_translator.routing import (
     build_document_routing_report,
     build_ocr_candidate_report,
@@ -103,6 +107,12 @@ def _parse_pages_arg(pages: str) -> list[int]:
     return values
 
 
+def _parse_pages_or_all(pages: str) -> list[int] | None:
+    if pages.strip().lower() == "all":
+        return None
+    return _parse_pages_arg(pages)
+
+
 def _print_page_preview_result(result: dict[str, Any]) -> None:
     print(ocr_page_translation_preview_report_to_text(result["page_translation_preview"]))
     print(f"[green]Page translation preview:[/green] {result['paths']['page_translation_json']} / {result['paths']['page_translation_text']}")
@@ -110,6 +120,17 @@ def _print_page_preview_result(result: dict[str, Any]) -> None:
     print(f"[green]Fusion overlay diagnostics:[/green] {result['paths']['diagnostics_pdf']} / {result['paths']['diagnostics_summary']}")
     if result["paths"]["diagnostic_images"]:
         print(f"[green]Diagnostic images generated:[/green] {len(result['paths']['diagnostic_images'])}")
+
+
+def _print_native_preview_result(result: dict[str, Any]) -> None:
+    paths = result["paths"]
+    print(overlay_prototype_summary_to_text(result["overlay_summary"]))
+    print(f"[green]Overlay-ready report:[/green] {paths['overlay_ready_json']} / {paths['overlay_ready_text']}")
+    print(f"[green]Pre-overlay report:[/green] {paths['pre_overlay_json']} / {paths['pre_overlay_text']}")
+    print(f"[green]Translation preview:[/green] {paths['translation_preview_json']} / {paths['translation_preview_text']}")
+    print(f"[green]Replacement plan:[/green] {paths['replacement_plan_json']} / {paths['replacement_plan_text']}")
+    print(f"[green]Native overlay PDF:[/green] {paths['overlay_pdf']}")
+    print(f"[green]Native overlay summary:[/green] {paths['overlay_summary_text']}")
 
 
 @app.command()
@@ -616,36 +637,45 @@ def document_preview(
     pages: str = "1",
     backend: Optional[str] = None,
 ) -> None:
-    """Génère un PDF de revue traduit, lisible et inspectable."""
+    """Génère une preview routée: overlay natif pur ou fusion natif/OCR selon les pages."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
-    document = extract_document(pdf_path)
-    result = run_ocr_experiment(
+    selected_pages = _parse_pages_or_all(pages)
+    result = run_document_preview(
         pdf_path=pdf_path,
-        document_ir=document.model_dump(),
         output_dir=settings.debug_dir,
         translate_text_fn=translate_text,
         selected_pages=selected_pages,
         backend=backend,
-        artifact_stem=f"{pdf_path.stem}_document_preview",
     )
-
-    paths = result["paths"]
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-
-    preview_pdf_path = settings.output_dir / f"{pdf_path.stem}_document_preview.pdf"
-    preview_summary_path = settings.output_dir / f"{pdf_path.stem}_document_preview_summary.txt"
-    preview_strategy_path = settings.output_dir / f"{pdf_path.stem}_document_preview_ocr_strategy.txt"
-
-    shutil.copy2(paths["diagnostics_pdf"], preview_pdf_path)
-    shutil.copy2(paths["diagnostics_summary"], preview_summary_path)
-    shutil.copy2(paths["ocr_strategy_text"], preview_strategy_path)
+    preview_result = result["preview_result"]
 
     print("[bold]Document preview complete[/bold]")
-    print(f"[green]Preview PDF:[/green] {preview_pdf_path}")
-    print(f"[green]Summary:[/green] {preview_summary_path}")
-    print(f"[green]OCR strategy:[/green] {preview_strategy_path}")
-    _print_page_preview_result(result)
+    print(f"[bold]Preview mode:[/bold] {result['preview_mode']}")
+    print(routing_report_to_text(result["routing_report"]))
+    print(f"[green]Routing report:[/green] {result['paths']['routing_json']} / {result['paths']['routing_text']}")
+    if result["preview_mode"] == "native_overlay":
+        _print_native_preview_result(preview_result)
+    else:
+        _print_page_preview_result(preview_result)
+
+
+@app.command()
+def native_preview(
+    pdf_path: Path,
+    pages: str = "1",
+) -> None:
+    """Génère une preview native complète: rapports, plan de remplacement et PDF overlay."""
+    configure_logging()
+    selected_pages = _parse_pages_or_all(pages)
+    result = run_native_overlay_preview(
+        pdf_path=pdf_path,
+        output_dir=settings.debug_dir,
+        selected_pages=selected_pages,
+        translate_text_fn=translate_text,
+    )
+
+    print("[bold]Native preview complete[/bold]")
+    _print_native_preview_result(result)
 
 
 if __name__ == "__main__":

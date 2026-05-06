@@ -188,6 +188,18 @@ Generate a multi-page document preview for review, with safe native overlays and
 ./.venv/bin/python -m pdf_translator.cli document-preview data/input/supportpourocr01.pdf --pages 1-3 --backend tesseract
 ```
 
+Generate a routed document preview. Native-only pages use the native overlay chain; pages with OCR candidates use the native/OCR fusion chain:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli document-preview data/input/myfile.pdf --pages "1-3" --backend tesseract
+```
+
+Generate a native-text overlay preview directly when OCR is not needed:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli native-preview data/input/myfile.pdf --pages "1-3"
+```
+
 ## Debug Artifacts
 
 The pipeline writes useful intermediate artifacts under `data/debug/`, including:
@@ -252,6 +264,8 @@ The one-command workflow is:
 ```bash
 ./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
 ```
+
+The preferred review entrypoint is now `document-preview`, which first writes a routing report and then dispatches to either the native overlay preview or the native/OCR fusion preview.
 
 Useful outputs include:
 

@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 .vscode/
 data/debug/
+data/**/*.pdf
+dump.txt
 
 data/input/CHAPITRE_3_LesJonctions_Cours_Physique_Dispos.pdf
 data/input/Séance 2 TD1 hétérogénéité plasmide REPONSES.pdf
