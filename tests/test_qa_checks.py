@@ -178,6 +178,32 @@ def test_annotate_repeated_blocks_marks_invoice_metadata_as_non_content() -> Non
     ]
 
 
+def test_annotate_repeated_blocks_marks_figure_caption_as_caption() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "height": 640,
+                "text_blocks": [
+                    {
+                        "bbox": {"y0": 386, "y1": 404},
+                        "text": "Figure 1 : Profil qualitatif de la jonction P/N.",
+                    },
+                    {
+                        "bbox": {"y0": 420, "y1": 438},
+                        "text": "Tableau 2 - Parametres experimentaux mesures.",
+                    },
+                ],
+            }
+        ]
+    }
+
+    annotated = annotate_repeated_blocks(document_ir)
+    roles = [block["role"] for block in annotated["pages"][0]["text_blocks"]]
+
+    assert roles == ["caption", "caption"]
+
+
 def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     report = {
         "selected_pages": [1],

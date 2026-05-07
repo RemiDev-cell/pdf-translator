@@ -6,13 +6,25 @@ from typing import Any
 
 
 PageRoute = str
+NATIVE_TRANSLATABLE_ROLES = {
+    "content",
+    "slide_title",
+    "caption",
+    "table_cell",
+    "table_header",
+    "figure_label",
+}
+
+
+def _is_native_translatable_block(block: dict[str, Any]) -> bool:
+    return block.get("role", "content") in NATIVE_TRANSLATABLE_ROLES
 
 
 def _classify_page_route(page: dict[str, Any]) -> tuple[PageRoute, list[str]]:
     image_count = int(page.get("image_count", 0) or 0)
     text_blocks = page.get("text_blocks", [])
     ocr_candidates = page.get("ocr_candidates", [])
-    content_blocks = [block for block in text_blocks if block.get("role", "content") == "content"]
+    content_blocks = [block for block in text_blocks if _is_native_translatable_block(block)]
 
     has_images = image_count > 0
     has_ocr_candidates = bool(ocr_candidates)
@@ -60,8 +72,8 @@ def build_document_routing_report(
         text_blocks = page.get("text_blocks", [])
         ocr_candidates = page.get("ocr_candidates", [])
         ignored_ocr_images = page.get("ignored_ocr_images", [])
-        content_blocks = [block for block in text_blocks if block.get("role", "content") == "content"]
-        excluded_blocks = [block for block in text_blocks if block.get("role", "content") != "content"]
+        content_blocks = [block for block in text_blocks if _is_native_translatable_block(block)]
+        excluded_blocks = [block for block in text_blocks if not _is_native_translatable_block(block)]
         excluded_role_summary = Counter(
             block.get("role", "unknown")
             for block in excluded_blocks

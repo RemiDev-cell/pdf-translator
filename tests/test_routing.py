@@ -135,6 +135,32 @@ def test_build_document_routing_report_ignores_decorative_images_for_ocr_route()
     assert "no_ocr_sized_image_regions" in report["pages"][0]["reasons"]
 
 
+def test_build_document_routing_report_counts_translatable_native_roles_as_content() -> None:
+    document_ir = {
+        "pdf_kind": "born_digital",
+        "pages": [
+            {
+                "page_number": 1,
+                "raw_text": "Title\nCaption",
+                "image_count": 0,
+                "ocr_candidates": [],
+                "block_count": 2,
+                "text_blocks": [
+                    {"role": "slide_title", "text": "SCIENTIFIC TITLE"},
+                    {"role": "caption", "text": "Figure 1 : Useful caption"},
+                ],
+            }
+        ],
+    }
+
+    report = build_document_routing_report(document_ir)
+
+    assert report["route_summary"] == {"native_only": 1}
+    assert report["pages"][0]["content_blocks"] == 2
+    assert report["pages"][0]["excluded_blocks"] == 0
+    assert report["pages"][0]["excluded_role_summary"] == {}
+
+
 def test_routing_report_to_text_includes_summary_and_reasons() -> None:
     report = {
         "selected_pages": [2],

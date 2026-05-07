@@ -17,10 +17,18 @@ CUSTOMER_ID_RE = re.compile(
     r"|\b(?:client|compte(?:\s+internet)?|ligne(?:\s+livebox)?)\s*:",
     re.IGNORECASE,
 )
-BILLING_METADATA_RE = re.compile(r"\b(?:n[°o]\s*de\s*facture|date de facture)\b", re.IGNORECASE)
-CURRENCY_VALUE_RE = re.compile(r"^[\d\s,.]+(?:€|%)?$")
+BILLING_METADATA_RE = re.compile(
+    r"\b(?:"
+    r"n[°o]\s*(?:de\s*)?facture"
+    r"|facture\s*n[°o]?"
+    r"|date de facture"
+    r")",
+    re.IGNORECASE,
+)
+CURRENCY_VALUE_RE = re.compile(r"^[+\-]?\d[\d\s,.]*(?:€|eur|%)?$", re.IGNORECASE)
 SHORT_DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
 POSTAL_ADDRESS_RE = re.compile(r"\b\d{5}\s+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ\s-]{2,}\b")
+CAPTION_RE = re.compile(r"^(?:fig(?:ure)?\.?|tableau|table)\s*\d+\s*[:.-]", re.IGNORECASE)
 
 
 def _vertical_overlap_ratio(bbox_a: dict[str, Any], bbox_b: dict[str, Any]) -> float:
@@ -167,6 +175,9 @@ def infer_block_role(
 
     if URL_RE.search(text) and len(text) <= 120:
         return "support_metadata"
+
+    if CAPTION_RE.search(text):
+        return "caption"
 
     uppercase_words = re.findall(r"[A-ZÀ-ÖØ-Þ]{2,}", text)
 
@@ -391,7 +402,7 @@ def build_overlay_ready_report(
     document_ir: dict[str, Any],
     selected_pages: list[int],
 ) -> dict[str, Any]:
-    candidate_roles = {"content", "slide_title", "diagram_label"}
+    candidate_roles = {"content", "slide_title", "caption", "diagram_label"}
     pages = [
         page
         for page in document_ir.get("pages", [])
