@@ -9,6 +9,20 @@ from typing import Any
 from pdf_translator.translate.glossary import translate_scientific_label
 
 
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+URL_RE = re.compile(r"\b(?:https?://|www\.|[A-Za-z0-9.-]+\.(?:fr|com|net|org)\b)")
+PHONE_RE = re.compile(r"\b(?:\d[\s.]){3,}\d\b")
+CUSTOMER_ID_RE = re.compile(
+    r"\bn[°o]\s*(?:de\s*)?(?:client|compte(?:\s+internet)?|ligne(?:\s+livebox)?)\b"
+    r"|\b(?:client|compte(?:\s+internet)?|ligne(?:\s+livebox)?)\s*:",
+    re.IGNORECASE,
+)
+BILLING_METADATA_RE = re.compile(r"\b(?:n[°o]\s*de\s*facture|date de facture)\b", re.IGNORECASE)
+CURRENCY_VALUE_RE = re.compile(r"^[\d\s,.]+(?:€|%)?$")
+SHORT_DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+POSTAL_ADDRESS_RE = re.compile(r"\b\d{5}\s+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ\s-]{2,}\b")
+
+
 def _vertical_overlap_ratio(bbox_a: dict[str, Any], bbox_b: dict[str, Any]) -> float:
     a_y0 = float(bbox_a.get("y0", 0))
     a_y1 = float(bbox_a.get("y1", 0))
@@ -107,11 +121,53 @@ def infer_block_role(
     bbox = block.get("bbox", {})
     y0 = float(bbox.get("y0", 0))
     y1 = float(bbox.get("y1", 0))
+    compact_text = text.replace("\n", "").replace(" ", "")
+    lowercase_text = text.lower()
 
-    if re.fullmatch(r"\d+", text):
+    if re.fullmatch(r"\d+", text) or re.fullmatch(r"page\s*:\s*\d+\s*/\s*\d+", lowercase_text):
         return "page_number"
 
-    compact_text = text.replace("\n", "").replace(" ", "")
+    if CURRENCY_VALUE_RE.fullmatch(text) and any(char.isdigit() for char in text):
+        return "numeric_value"
+
+    if y1 > page_height * 0.92 and any(token in lowercase_text for token in ("rcs", "sa au capital", "siret")):
+        return "legal_footer"
+
+    if any(
+        token in lowercase_text
+        for token in (
+            "nous contacter",
+            "vos espaces clients",
+            "service clients",
+            "assistance technique",
+            "contact.orange",
+            "orange et moi",
+            "orange.fr",
+            "tarifs de vos communications",
+            "tarifsetcontrats",
+            "paiement facture",
+        )
+    ):
+        return "support_metadata"
+
+    if BILLING_METADATA_RE.search(lowercase_text):
+        return "billing_metadata"
+
+    if SHORT_DATE_RE.fullmatch(text):
+        return "billing_metadata"
+
+    if (
+        "vos coordonnées" in lowercase_text
+        or CUSTOMER_ID_RE.search(lowercase_text)
+        or EMAIL_RE.search(text)
+        or PHONE_RE.search(text)
+        or POSTAL_ADDRESS_RE.search(text)
+    ):
+        return "sensitive_metadata"
+
+    if URL_RE.search(text) and len(text) <= 120:
+        return "support_metadata"
+
     uppercase_words = re.findall(r"[A-ZÀ-ÖØ-Þ]{2,}", text)
 
     if len(compact_text) <= 3:

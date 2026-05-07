@@ -31,3 +31,24 @@ def test_extract_document_collects_ocr_candidates_from_image_blocks(tmp_path: Pa
     assert round(candidate.width, 1) == 100.0
     assert round(candidate.height, 1) == 100.0
     assert candidate.area_ratio > 0.0
+
+
+def test_extract_document_ignores_small_decorative_images_as_ocr_candidates(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "decorative-image.pdf"
+    image_path = tmp_path / "sample.png"
+
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), 0)
+    pixmap.clear_with(0xFF6600)
+    pixmap.save(image_path)
+
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 30), "Bonjour")
+    page.insert_image(fitz.Rect(20, 50, 28, 58), filename=str(image_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    extracted = extract_document(pdf_path)
+
+    assert extracted.pages[0].image_count == 1
+    assert extracted.pages[0].ocr_candidates == []

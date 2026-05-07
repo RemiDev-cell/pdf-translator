@@ -134,6 +134,50 @@ def test_annotate_repeated_blocks_marks_multiline_schema_labels() -> None:
     assert roles == ["diagram_label", "slide_title"]
 
 
+def test_annotate_repeated_blocks_marks_invoice_metadata_as_non_content() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "height": 840,
+                "text_blocks": [
+                    {
+                        "bbox": {"y0": 340, "y1": 440},
+                        "text": "Vos coordonnées\nM PARTOUCHE REMI\npartouche@example.org\nn° client : 034 589 6751",
+                    },
+                    {
+                        "bbox": {"y0": 460, "y1": 560},
+                        "text": "Nous contacter\nen ligne : contact.orange.fr\nPar téléphone : 3900",
+                    },
+                    {
+                        "bbox": {"y0": 812, "y1": 820},
+                        "text": "Orange SA au capital de 10 640 226 396 € - 380 129 866 RCS Nanterre",
+                    },
+                    {
+                        "bbox": {"y0": 294, "y1": 308},
+                        "text": "39,36 €",
+                    },
+                    {
+                        "bbox": {"y0": 100, "y1": 130},
+                        "text": "Votre facture\ninternet fibre",
+                    },
+                ],
+            }
+        ]
+    }
+
+    annotated = annotate_repeated_blocks(document_ir)
+    roles = [block["role"] for block in annotated["pages"][0]["text_blocks"]]
+
+    assert roles == [
+        "sensitive_metadata",
+        "support_metadata",
+        "legal_footer",
+        "numeric_value",
+        "content",
+    ]
+
+
 def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     report = {
         "selected_pages": [1],

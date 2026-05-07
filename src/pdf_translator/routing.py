@@ -14,7 +14,8 @@ def _classify_page_route(page: dict[str, Any]) -> tuple[PageRoute, list[str]]:
     ocr_candidates = page.get("ocr_candidates", [])
     content_blocks = [block for block in text_blocks if block.get("role", "content") == "content"]
 
-    has_images = image_count > 0 or bool(ocr_candidates)
+    has_images = image_count > 0
+    has_ocr_candidates = bool(ocr_candidates)
     has_native_content = bool(content_blocks)
     has_native_non_content = bool(text_blocks) and not has_native_content
 
@@ -23,15 +24,21 @@ def _classify_page_route(page: dict[str, Any]) -> tuple[PageRoute, list[str]]:
         reasons.append("has_native_content_blocks")
     if has_images:
         reasons.append("contains_raster_images")
+    if has_images and not has_ocr_candidates:
+        reasons.append("no_ocr_sized_image_regions")
+    if has_ocr_candidates:
+        reasons.append("has_ocr_candidate_regions")
     if has_native_non_content:
         reasons.append("native_text_classified_as_non_content_only")
 
-    if has_native_content and has_images:
+    if has_native_content and has_ocr_candidates:
         return "native_plus_ocr_candidates", reasons
     if has_native_content:
         return "native_only", reasons
-    if has_images:
+    if has_ocr_candidates:
         return "ocr_only", reasons
+    if has_images:
+        return "image_only_no_ocr_candidates", reasons
     if has_native_non_content:
         return "native_non_content_only", reasons
     return "empty", reasons

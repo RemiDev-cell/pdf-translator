@@ -113,6 +113,13 @@ def _parse_pages_or_all(pages: str) -> list[int] | None:
     return _parse_pages_arg(pages)
 
 
+def _resolve_pages_arg(pages: str, document_ir: dict[str, Any]) -> list[int]:
+    selected_pages = _parse_pages_or_all(pages)
+    if selected_pages is not None:
+        return selected_pages
+    return [int(page["page_number"]) for page in document_ir.get("pages", [])]
+
+
 def _print_page_preview_result(result: dict[str, Any]) -> None:
     print(ocr_page_translation_preview_report_to_text(result["page_translation_preview"]))
     print(f"[green]Page translation preview:[/green] {result['paths']['page_translation_json']} / {result['paths']['page_translation_text']}")
@@ -148,9 +155,9 @@ def audit_sample(
 ) -> None:
     """Audit ciblé sur un sous-ensemble de pages, sans traduction."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     report = build_page_audit(document_ir, selected_pages)
     stem = f"{pdf_path.stem}_audit_sample"
     json_path, text_path = write_audit_report(report, settings.debug_dir, stem)
@@ -166,9 +173,9 @@ def overlay_ready(
 ) -> None:
     """Construit un rapport compact des blocs content candidats à l'overlay."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     report = build_overlay_ready_report(document_ir, selected_pages)
     stem = f"{pdf_path.stem}_overlay_ready"
     json_path, text_path = write_overlay_ready_report(report, settings.debug_dir, stem)
@@ -184,9 +191,9 @@ def pre_overlay(
 ) -> None:
     """Construit les regions candidates au futur overlay à partir des blocs content."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     overlay_ready_report = build_overlay_ready_report(document_ir, selected_pages)
     report = build_pre_overlay_report(overlay_ready_report)
     stem = f"{pdf_path.stem}_pre_overlay"
@@ -203,9 +210,9 @@ def overlay_preview(
 ) -> None:
     """Génère un PDF annoté et des PNG de diagnostic pour les regions pre-overlay."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     overlay_ready_report = build_overlay_ready_report(document_ir, selected_pages)
     report = build_pre_overlay_report(overlay_ready_report)
     stem = f"{pdf_path.stem}_overlay_preview"
@@ -228,9 +235,9 @@ def translation_preview(
 ) -> None:
     """Génère un aperçu de traduction lisible sans identifiants de blocs."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     overlay_ready_report = build_overlay_ready_report(document_ir, selected_pages)
     pre_overlay_report = build_pre_overlay_report(overlay_ready_report)
     segments_report = build_translation_preview_segments(pre_overlay_report, selected_pages)
@@ -255,9 +262,9 @@ def replacement_plan(
 ) -> None:
     """Construit un plan de remplacement à partir du preview de traduction."""
     configure_logging()
-    selected_pages = _parse_pages_arg(pages)
     document = extract_document(pdf_path)
     document_ir = annotate_repeated_blocks(document.model_dump())
+    selected_pages = _resolve_pages_arg(pages, document_ir)
     overlay_ready_report = build_overlay_ready_report(document_ir, selected_pages)
     pre_overlay_report = build_pre_overlay_report(overlay_ready_report)
     segments_report = build_translation_preview_segments(pre_overlay_report, selected_pages)

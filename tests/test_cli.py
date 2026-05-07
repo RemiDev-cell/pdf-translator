@@ -1,7 +1,7 @@
 import pytest
 import typer
 
-from pdf_translator.cli import _parse_pages_arg, _parse_pages_or_all
+from pdf_translator.cli import _parse_pages_arg, _parse_pages_or_all, _resolve_pages_arg
 
 
 def test_parse_pages_arg_accepts_ranges_and_deduplicates() -> None:
@@ -22,3 +22,15 @@ def test_parse_pages_or_all_accepts_all_keyword() -> None:
     assert _parse_pages_or_all("all") is None
     assert _parse_pages_or_all("ALL") is None
     assert _parse_pages_or_all("1-2") == [1, 2]
+
+
+def test_resolve_pages_arg_expands_all_from_document_ir() -> None:
+    document_ir = {
+        "pages": [
+            {"page_number": 1},
+            {"page_number": 2},
+        ]
+    }
+
+    assert _resolve_pages_arg("all", document_ir) == [1, 2]
+    assert _resolve_pages_arg("2", document_ir) == [2]

@@ -16,6 +16,12 @@ from pdf_translator.models import (
 )
 
 
+MIN_OCR_CANDIDATE_AREA_RATIO = 0.01
+MIN_OCR_CANDIDATE_WIDTH = 32.0
+MIN_OCR_CANDIDATE_HEIGHT = 24.0
+MAX_OCR_CANDIDATE_ASPECT_RATIO = 8.0
+
+
 def _bbox_from_sequence(values) -> BoundingBox:
     return BoundingBox(
         x0=float(values[0]),
@@ -23,6 +29,19 @@ def _bbox_from_sequence(values) -> BoundingBox:
         x1=float(values[2]),
         y1=float(values[3]),
     )
+
+
+def _ocr_candidate_reason(width: float, height: float, area_ratio: float) -> str | None:
+    if width < MIN_OCR_CANDIDATE_WIDTH or height < MIN_OCR_CANDIDATE_HEIGHT:
+        return None
+    if area_ratio < MIN_OCR_CANDIDATE_AREA_RATIO:
+        return None
+
+    aspect_ratio = max(width / max(height, 1.0), height / max(width, 1.0))
+    if aspect_ratio > MAX_OCR_CANDIDATE_ASPECT_RATIO:
+        return None
+
+    return "image_block"
 
 
 def extract_document(pdf_path: str | Path) -> DocumentModel:
@@ -55,6 +74,10 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                 width = max(0.0, bbox.x1 - bbox.x0)
                 height = max(0.0, bbox.y1 - bbox.y0)
                 area_ratio = (width * height) / page_area
+                reason = _ocr_candidate_reason(width, height, area_ratio)
+                if reason is None:
+                    continue
+
                 page_model.ocr_candidates.append(
                     OcrCandidate(
                         page_number=page_number,
@@ -63,6 +86,7 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                         width=width,
                         height=height,
                         area_ratio=area_ratio,
+                        reason=reason,
                     )
                 )
                 ocr_candidate_index += 1

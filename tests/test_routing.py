@@ -23,6 +23,7 @@ def test_build_document_routing_report_distinguishes_native_and_ocr_paths() -> N
                 "page_number": 2,
                 "raw_text": "Caption",
                 "image_count": 2,
+                "ocr_candidates": [{"candidate_index": 0}],
                 "block_count": 2,
                 "text_blocks": [
                     {"role": "content", "text": "Caption"},
@@ -33,6 +34,7 @@ def test_build_document_routing_report_distinguishes_native_and_ocr_paths() -> N
                 "page_number": 3,
                 "raw_text": "",
                 "image_count": 1,
+                "ocr_candidates": [{"candidate_index": 0}],
                 "block_count": 0,
                 "text_blocks": [],
             },
@@ -86,8 +88,30 @@ def test_build_document_routing_report_filters_selected_pages() -> None:
     report = build_document_routing_report(document_ir, selected_pages=[2])
 
     assert report["page_count"] == 1
-    assert report["route_summary"] == {"ocr_only": 1}
+    assert report["route_summary"] == {"image_only_no_ocr_candidates": 1}
     assert report["pages"][0]["page_number"] == 2
+
+
+def test_build_document_routing_report_ignores_decorative_images_for_ocr_route() -> None:
+    document_ir = {
+        "pdf_kind": "hybrid",
+        "pages": [
+            {
+                "page_number": 1,
+                "raw_text": "Invoice text",
+                "image_count": 3,
+                "ocr_candidates": [],
+                "block_count": 1,
+                "text_blocks": [{"role": "content", "text": "Invoice text"}],
+            }
+        ],
+    }
+
+    report = build_document_routing_report(document_ir)
+
+    assert report["route_summary"] == {"native_only": 1}
+    assert report["pages"][0]["route"] == "native_only"
+    assert "no_ocr_sized_image_regions" in report["pages"][0]["reasons"]
 
 
 def test_routing_report_to_text_includes_summary_and_reasons() -> None:
