@@ -52,3 +52,8 @@ def test_extract_document_ignores_small_decorative_images_as_ocr_candidates(tmp_
 
     assert extracted.pages[0].image_count == 1
     assert extracted.pages[0].ocr_candidates == []
+    assert len(extracted.pages[0].ignored_ocr_images) == 1
+    ignored = extracted.pages[0].ignored_ocr_images[0]
+    assert ignored.reason == "image_too_small_for_ocr"
+    assert round(ignored.width, 1) == 8.0
+    assert round(ignored.height, 1) == 8.0

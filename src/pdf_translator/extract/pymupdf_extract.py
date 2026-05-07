@@ -8,6 +8,7 @@ from pdf_translator.extract.classify_pdf import classify_pdf
 from pdf_translator.models import (
     BoundingBox,
     DocumentModel,
+    IgnoredOcrImage,
     OcrCandidate,
     PageModel,
     TextBlock,
@@ -31,17 +32,17 @@ def _bbox_from_sequence(values) -> BoundingBox:
     )
 
 
-def _ocr_candidate_reason(width: float, height: float, area_ratio: float) -> str | None:
+def _ocr_ignored_reason(width: float, height: float, area_ratio: float) -> str | None:
     if width < MIN_OCR_CANDIDATE_WIDTH or height < MIN_OCR_CANDIDATE_HEIGHT:
-        return None
+        return "image_too_small_for_ocr"
     if area_ratio < MIN_OCR_CANDIDATE_AREA_RATIO:
-        return None
+        return "image_area_below_ocr_threshold"
 
     aspect_ratio = max(width / max(height, 1.0), height / max(width, 1.0))
     if aspect_ratio > MAX_OCR_CANDIDATE_ASPECT_RATIO:
-        return None
+        return "image_aspect_ratio_too_extreme"
 
-    return "image_block"
+    return None
 
 
 def extract_document(pdf_path: str | Path) -> DocumentModel:
@@ -65,6 +66,7 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
 
         block_index = 0
         ocr_candidate_index = 0
+        image_block_index = 0
         page_area = max(1.0, float(page.rect.width) * float(page.rect.height))
         for block in page_dict.get("blocks", []):
             block_type = block.get("type", -1)
@@ -74,8 +76,20 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                 width = max(0.0, bbox.x1 - bbox.x0)
                 height = max(0.0, bbox.y1 - bbox.y0)
                 area_ratio = (width * height) / page_area
-                reason = _ocr_candidate_reason(width, height, area_ratio)
-                if reason is None:
+                ignored_reason = _ocr_ignored_reason(width, height, area_ratio)
+                if ignored_reason is not None:
+                    page_model.ignored_ocr_images.append(
+                        IgnoredOcrImage(
+                            page_number=page_number,
+                            image_index=image_block_index,
+                            bbox=bbox,
+                            width=width,
+                            height=height,
+                            area_ratio=area_ratio,
+                            reason=ignored_reason,
+                        )
+                    )
+                    image_block_index += 1
                     continue
 
                 page_model.ocr_candidates.append(
@@ -86,10 +100,11 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                         width=width,
                         height=height,
                         area_ratio=area_ratio,
-                        reason=reason,
+                        reason="image_block",
                     )
                 )
                 ocr_candidate_index += 1
+                image_block_index += 1
                 continue
 
             if block_type != 0:

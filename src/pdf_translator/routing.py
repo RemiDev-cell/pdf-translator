@@ -59,12 +59,25 @@ def build_document_routing_report(
     for page in pages:
         text_blocks = page.get("text_blocks", [])
         ocr_candidates = page.get("ocr_candidates", [])
+        ignored_ocr_images = page.get("ignored_ocr_images", [])
         content_blocks = [block for block in text_blocks if block.get("role", "content") == "content"]
         excluded_blocks = [block for block in text_blocks if block.get("role", "content") != "content"]
         excluded_role_summary = Counter(
             block.get("role", "unknown")
             for block in excluded_blocks
         )
+        ignored_ocr_image_reason_summary = Counter(
+            image.get("reason", "unknown")
+            for image in ignored_ocr_images
+        )
+        image_count = int(page.get("image_count", 0) or 0)
+        untracked_ignored_images = max(
+            0,
+            image_count - len(ocr_candidates) - len(ignored_ocr_images),
+        )
+        if untracked_ignored_images:
+            ignored_ocr_image_reason_summary["image_not_reported_as_text_dict_block"] += untracked_ignored_images
+        image_block_count = len(ocr_candidates) + len(ignored_ocr_images) + untracked_ignored_images
         native_text_chars = len(page.get("raw_text", ""))
         route, reasons = _classify_page_route(page)
         route_counts[route] += 1
@@ -76,7 +89,8 @@ def build_document_routing_report(
                 "reasons": reasons,
                 "native_text_chars": native_text_chars,
                 "raw_chars": native_text_chars,
-                "image_count": page.get("image_count", 0),
+                "image_count": image_count,
+                "image_block_count": image_block_count,
                 "block_count": page.get("block_count", len(text_blocks)),
                 "content_blocks": len(content_blocks),
                 "content_block_count": len(content_blocks),
@@ -84,6 +98,8 @@ def build_document_routing_report(
                 "non_content_block_count": len(text_blocks) - len(content_blocks),
                 "excluded_role_summary": dict(excluded_role_summary),
                 "ocr_candidate_count": len(ocr_candidates),
+                "ignored_ocr_image_count": len(ignored_ocr_images) + untracked_ignored_images,
+                "ignored_ocr_image_reason_summary": dict(ignored_ocr_image_reason_summary),
             }
         )
 
@@ -106,13 +122,20 @@ def routing_report_to_text(report: dict[str, Any]) -> str:
 
     for page in report.get("pages", []):
         excluded_summary = page.get("excluded_role_summary", {})
+        ignored_image_summary = page.get("ignored_ocr_image_reason_summary", {})
         lines.append(
             f"Page {page['page_number']}: route={page['route']} "
             f"native_text_chars={page.get('native_text_chars', page.get('raw_chars', 0))} "
-            f"image_count={page['image_count']} ocr_candidate_count={page.get('ocr_candidate_count', 0)} "
+            f"image_count={page['image_count']} image_block_count={page.get('image_block_count', page['image_count'])} "
+            f"ocr_candidate_count={page.get('ocr_candidate_count', 0)} "
+            f"ignored_ocr_image_count={page.get('ignored_ocr_image_count', 0)} "
             f"blocks={page['block_count']} content_blocks={page.get('content_blocks', page.get('content_block_count', 0))} "
             f"excluded_blocks={page.get('excluded_blocks', page.get('non_content_block_count', 0))}"
         )
+        if ignored_image_summary:
+            lines.append(
+                f"  ignored_ocr_images: {json.dumps(ignored_image_summary, ensure_ascii=False, sort_keys=True)}"
+            )
         if excluded_summary:
             lines.append(
                 f"  excluded_roles: {json.dumps(excluded_summary, ensure_ascii=False, sort_keys=True)}"

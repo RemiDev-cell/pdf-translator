@@ -24,6 +24,9 @@ def test_build_document_routing_report_distinguishes_native_and_ocr_paths() -> N
                 "raw_text": "Caption",
                 "image_count": 2,
                 "ocr_candidates": [{"candidate_index": 0}],
+                "ignored_ocr_images": [
+                    {"reason": "image_area_below_ocr_threshold"}
+                ],
                 "block_count": 2,
                 "text_blocks": [
                     {"role": "content", "text": "Caption"},
@@ -64,6 +67,7 @@ def test_build_document_routing_report_distinguishes_native_and_ocr_paths() -> N
     assert report["pages"][3]["route"] == "native_non_content_only"
     assert report["pages"][1]["native_text_chars"] == len("Caption")
     assert report["pages"][1]["image_count"] == 2
+    assert report["pages"][1]["image_block_count"] == 2
     assert report["pages"][1]["ocr_candidate_count"] == 1
     assert report["pages"][1]["content_blocks"] == 1
     assert report["pages"][1]["excluded_blocks"] == 1
@@ -107,6 +111,11 @@ def test_build_document_routing_report_ignores_decorative_images_for_ocr_route()
                 "raw_text": "Invoice text",
                 "image_count": 3,
                 "ocr_candidates": [],
+                "ignored_ocr_images": [
+                    {"reason": "image_too_small_for_ocr"},
+                    {"reason": "image_too_small_for_ocr"},
+                    {"reason": "image_area_below_ocr_threshold"},
+                ],
                 "block_count": 1,
                 "text_blocks": [{"role": "content", "text": "Invoice text"}],
             }
@@ -117,6 +126,12 @@ def test_build_document_routing_report_ignores_decorative_images_for_ocr_route()
 
     assert report["route_summary"] == {"native_only": 1}
     assert report["pages"][0]["route"] == "native_only"
+    assert report["pages"][0]["image_block_count"] == 3
+    assert report["pages"][0]["ignored_ocr_image_count"] == 3
+    assert report["pages"][0]["ignored_ocr_image_reason_summary"] == {
+        "image_area_below_ocr_threshold": 1,
+        "image_too_small_for_ocr": 2,
+    }
     assert "no_ocr_sized_image_regions" in report["pages"][0]["reasons"]
 
 
@@ -138,6 +153,8 @@ def test_routing_report_to_text_includes_summary_and_reasons() -> None:
                 "excluded_blocks": 0,
                 "excluded_role_summary": {},
                 "ocr_candidate_count": 1,
+                "ignored_ocr_image_count": 0,
+                "ignored_ocr_image_reason_summary": {},
             }
         ],
     }
@@ -149,7 +166,9 @@ def test_routing_report_to_text_includes_summary_and_reasons() -> None:
     assert "Page 2: route=ocr_only" in text
     assert "native_text_chars=0" in text
     assert "image_count=1" in text
+    assert "image_block_count=1" in text
     assert "ocr_candidate_count=1" in text
+    assert "ignored_ocr_image_count=0" in text
     assert "content_blocks=0" in text
     assert "excluded_blocks=0" in text
     assert "contains_raster_images" in text
@@ -165,6 +184,9 @@ def test_routing_report_to_text_includes_excluded_role_summary() -> None:
                     "raw_text": "Votre facture\npage : 1/2\nOrange SA",
                     "image_count": 1,
                     "ocr_candidates": [],
+                    "ignored_ocr_images": [
+                        {"reason": "image_too_small_for_ocr"}
+                    ],
                     "block_count": 3,
                     "text_blocks": [
                         {"role": "content", "text": "Votre facture"},
@@ -184,6 +206,10 @@ def test_routing_report_to_text_includes_excluded_role_summary() -> None:
         "legal_footer": 1,
         "page_number": 1,
     }
+    assert report["pages"][0]["ignored_ocr_image_reason_summary"] == {
+        "image_too_small_for_ocr": 1,
+    }
+    assert 'ignored_ocr_images: {"image_too_small_for_ocr": 1}' in text
     assert 'excluded_roles: {"legal_footer": 1, "page_number": 1}' in text
 
 

@@ -65,12 +65,24 @@ class OcrCandidate(BaseModel):
     reason: str = "image_block"
 
 
+class IgnoredOcrImage(BaseModel):
+    page_number: int
+    image_index: int
+    source_block_type: BlockType = "image"
+    bbox: BoundingBox
+    width: float
+    height: float
+    area_ratio: float = 0.0
+    reason: str
+
+
 class PageModel(BaseModel):
     page_number: int
     width: float
     height: float
     text_blocks: list[TextBlock] = Field(default_factory=list)
     ocr_candidates: list[OcrCandidate] = Field(default_factory=list)
+    ignored_ocr_images: list[IgnoredOcrImage] = Field(default_factory=list)
     image_count: int = 0
     raw_text: str = ""
     block_count: int = 0
