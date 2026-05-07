@@ -141,13 +141,15 @@ def test_build_document_routing_report_counts_translatable_native_roles_as_conte
         "pages": [
             {
                 "page_number": 1,
-                "raw_text": "Title\nCaption",
+                "raw_text": "Title\nCaption\nTable",
                 "image_count": 0,
                 "ocr_candidates": [],
-                "block_count": 2,
+                "block_count": 4,
                 "text_blocks": [
                     {"role": "slide_title", "text": "SCIENTIFIC TITLE"},
                     {"role": "caption", "text": "Figure 1 : Useful caption"},
+                    {"role": "table_header", "text": "Parametre\nValeur"},
+                    {"role": "table_cell", "text": "Tension\n0,72"},
                 ],
             }
         ],
@@ -156,7 +158,7 @@ def test_build_document_routing_report_counts_translatable_native_roles_as_conte
     report = build_document_routing_report(document_ir)
 
     assert report["route_summary"] == {"native_only": 1}
-    assert report["pages"][0]["content_blocks"] == 2
+    assert report["pages"][0]["content_blocks"] == 4
     assert report["pages"][0]["excluded_blocks"] == 0
     assert report["pages"][0]["excluded_role_summary"] == {}
 

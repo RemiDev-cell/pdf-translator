@@ -238,6 +238,51 @@ def infer_block_role(
     return "content"
 
 
+def _looks_like_table_row(block: dict[str, Any]) -> bool:
+    if block.get("role", "content") != "content":
+        return False
+
+    lines = [
+        line
+        for line in block.get("lines", [])
+        if line.get("text", "").strip() and line.get("bbox")
+    ]
+    if len(lines) < 2:
+        return False
+
+    y_centers = [
+        (float(line["bbox"].get("y0", 0)) + float(line["bbox"].get("y1", 0))) / 2
+        for line in lines
+    ]
+    x_starts = [float(line["bbox"].get("x0", 0)) for line in lines]
+    if max(y_centers) - min(y_centers) > 4.0:
+        return False
+
+    return len(set(round(x_start / 8) for x_start in x_starts)) >= 2
+
+
+def _mark_table_runs(page: dict[str, Any]) -> None:
+    blocks = page.get("text_blocks", [])
+    run: list[dict[str, Any]] = []
+
+    def flush_run() -> None:
+        if len(run) < 2:
+            run.clear()
+            return
+        run[0]["role"] = "table_header"
+        for row_block in run[1:]:
+            row_block["role"] = "table_cell"
+        run.clear()
+
+    for block in blocks:
+        if _looks_like_table_row(block):
+            run.append(block)
+            continue
+        flush_run()
+
+    flush_run()
+
+
 def annotate_repeated_blocks(document_ir: dict[str, Any]) -> dict[str, Any]:
     normalized_blocks: list[str] = []
 
@@ -259,6 +304,7 @@ def annotate_repeated_blocks(document_ir: dict[str, Any]) -> dict[str, Any]:
                 repeat_count=repeat_count,
                 page_height=page_height,
             )
+        _mark_table_runs(page)
 
     return document_ir
 
@@ -402,7 +448,14 @@ def build_overlay_ready_report(
     document_ir: dict[str, Any],
     selected_pages: list[int],
 ) -> dict[str, Any]:
-    candidate_roles = {"content", "slide_title", "caption", "diagram_label"}
+    candidate_roles = {
+        "content",
+        "slide_title",
+        "caption",
+        "table_cell",
+        "table_header",
+        "diagram_label",
+    }
     pages = [
         page
         for page in document_ir.get("pages", [])

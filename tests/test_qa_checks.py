@@ -204,6 +204,50 @@ def test_annotate_repeated_blocks_marks_figure_caption_as_caption() -> None:
     assert roles == ["caption", "caption"]
 
 
+def test_annotate_repeated_blocks_marks_simple_table_run() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "height": 640,
+                "text_blocks": [
+                    {
+                        "bbox": {"y0": 100, "y1": 112},
+                        "text": "Parametre\nValeur\nUnite",
+                        "lines": [
+                            {"text": "Parametre", "bbox": {"x0": 54, "y0": 100, "x1": 96, "y1": 112}},
+                            {"text": "Valeur", "bbox": {"x0": 190, "y0": 100, "x1": 220, "y1": 112}},
+                            {"text": "Unite", "bbox": {"x0": 310, "y0": 100, "x1": 334, "y1": 112}},
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 130, "y1": 142},
+                        "text": "Tension directe\n0,72\nV",
+                        "lines": [
+                            {"text": "Tension directe", "bbox": {"x0": 54, "y0": 130, "x1": 116, "y1": 142}},
+                            {"text": "0,72", "bbox": {"x0": 190, "y0": 130, "x1": 212, "y1": 142}},
+                            {"text": "V", "bbox": {"x0": 310, "y0": 130, "x1": 316, "y1": 142}},
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 170, "y1": 195},
+                        "text": "Paragraph line one\nParagraph line two",
+                        "lines": [
+                            {"text": "Paragraph line one", "bbox": {"x0": 54, "y0": 170, "x1": 150, "y1": 182}},
+                            {"text": "Paragraph line two", "bbox": {"x0": 54, "y0": 183, "x1": 154, "y1": 195}},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    annotated = annotate_repeated_blocks(document_ir)
+    roles = [block["role"] for block in annotated["pages"][0]["text_blocks"]]
+
+    assert roles == ["table_header", "table_cell", "content"]
+
+
 def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     report = {
         "selected_pages": [1],

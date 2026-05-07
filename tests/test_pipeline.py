@@ -83,6 +83,47 @@ def _make_scientific_born_digital_pdf(pdf_path: Path) -> None:
     doc.close()
 
 
+def _make_simple_table_pdf(pdf_path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=480, height=640)
+    page.insert_textbox(
+        fitz.Rect(36, 28, 444, 62),
+        "MESURES ELECTRIQUES DE LA JONCTION",
+        fontsize=15,
+    )
+    page.insert_textbox(
+        fitz.Rect(54, 78, 426, 98),
+        "Les resultats experimentaux sont resumes dans le tableau suivant.",
+        fontsize=10,
+    )
+
+    xs = [54, 190, 310]
+    widths = [136, 120, 104]
+    rows = [
+        ("Parametre", "Valeur", "Unite"),
+        ("Tension directe", "0,72", "V"),
+        ("Courant inverse", "12", "uA"),
+        ("Temperature", "300", "K"),
+    ]
+    for row_index, row in enumerate(rows):
+        y = 130 + (row_index * 30)
+        for x, width, text in zip(xs, widths, row):
+            page.draw_rect(
+                fitz.Rect(x - 6, y - 16, x + width, y + 6),
+                color=(0, 0, 0),
+                width=0.5,
+            )
+            page.insert_text((x, y), text, fontsize=9)
+
+    page.insert_textbox(
+        fitz.Rect(54, 266, 426, 300),
+        "Tableau 1 : Parametres experimentaux mesures a temperature ambiante.",
+        fontsize=9,
+    )
+    doc.save(pdf_path)
+    doc.close()
+
+
 def test_run_native_overlay_preview_writes_artifact_chain(tmp_path: Path) -> None:
     pdf_path = tmp_path / "native.pdf"
     doc = fitz.open()
@@ -246,3 +287,45 @@ def test_run_document_preview_keeps_scientific_born_digital_page_native(tmp_path
     assert "I = I_s (exp(qV / kT) - 1)" in candidate_texts
     assert any(text.startswith("Figure 1 : Profil qualitatif") for text in candidate_texts)
     assert any("semi-conducteurs" in text for text in candidate_texts)
+
+
+def test_run_document_preview_marks_simple_table_rows_as_overlay_candidates(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "simple-table.pdf"
+    _make_simple_table_pdf(pdf_path)
+
+    result = run_document_preview(
+        pdf_path=pdf_path,
+        output_dir=tmp_path,
+        selected_pages=[1],
+        translate_text_fn=lambda text: f"EN {text}",
+        artifact_stem="simple_table",
+    )
+
+    assert result["preview_mode"] == "native_overlay"
+    assert result["routing_report"]["pdf_kind"] == "born_digital"
+    assert result["routing_report"]["route_summary"] == {"native_only": 1}
+
+    page_report = result["routing_report"]["pages"][0]
+    assert page_report["image_count"] == 0
+    assert page_report["ocr_candidate_count"] == 0
+    assert page_report["excluded_role_summary"] == {}
+
+    role_summary = {}
+    for block in result["preview_result"]["document_ir"]["pages"][0]["text_blocks"]:
+        role_summary[block["role"]] = role_summary.get(block["role"], 0) + 1
+    assert role_summary == {
+        "caption": 1,
+        "content": 1,
+        "slide_title": 1,
+        "table_cell": 3,
+        "table_header": 1,
+    }
+
+    overlay_page = result["preview_result"]["overlay_ready_report"]["pages"][0]
+    candidate_texts = [candidate["text"] for candidate in overlay_page["candidates"]]
+
+    assert overlay_page["candidate_block_count"] == 7
+    assert "Parametre\nValeur\nUnite" in candidate_texts
+    assert "Tension directe\n0,72\nV" in candidate_texts
+    assert "Temperature\n300\nK" in candidate_texts
+    assert any(text.startswith("Tableau 1 : Parametres") for text in candidate_texts)
