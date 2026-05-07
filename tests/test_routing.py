@@ -62,6 +62,12 @@ def test_build_document_routing_report_distinguishes_native_and_ocr_paths() -> N
     assert report["pages"][1]["route"] == "native_plus_ocr_candidates"
     assert report["pages"][2]["route"] == "ocr_only"
     assert report["pages"][3]["route"] == "native_non_content_only"
+    assert report["pages"][1]["native_text_chars"] == len("Caption")
+    assert report["pages"][1]["image_count"] == 2
+    assert report["pages"][1]["ocr_candidate_count"] == 1
+    assert report["pages"][1]["content_blocks"] == 1
+    assert report["pages"][1]["excluded_blocks"] == 1
+    assert report["pages"][1]["excluded_role_summary"] == {"diagram_label": 1}
 
 
 def test_build_document_routing_report_filters_selected_pages() -> None:
@@ -129,6 +135,9 @@ def test_routing_report_to_text_includes_summary_and_reasons() -> None:
                 "image_count": 1,
                 "block_count": 0,
                 "content_block_count": 0,
+                "excluded_blocks": 0,
+                "excluded_role_summary": {},
+                "ocr_candidate_count": 1,
             }
         ],
     }
@@ -138,7 +147,44 @@ def test_routing_report_to_text_includes_summary_and_reasons() -> None:
     assert "PDF kind: hybrid" in text
     assert 'Route summary: {"ocr_only": 1}' in text
     assert "Page 2: route=ocr_only" in text
+    assert "native_text_chars=0" in text
+    assert "image_count=1" in text
+    assert "ocr_candidate_count=1" in text
+    assert "content_blocks=0" in text
+    assert "excluded_blocks=0" in text
     assert "contains_raster_images" in text
+
+
+def test_routing_report_to_text_includes_excluded_role_summary() -> None:
+    report = build_document_routing_report(
+        {
+            "pdf_kind": "hybrid",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "raw_text": "Votre facture\npage : 1/2\nOrange SA",
+                    "image_count": 1,
+                    "ocr_candidates": [],
+                    "block_count": 3,
+                    "text_blocks": [
+                        {"role": "content", "text": "Votre facture"},
+                        {"role": "page_number", "text": "page : 1/2"},
+                        {"role": "legal_footer", "text": "Orange SA"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    text = routing_report_to_text(report)
+
+    assert report["pages"][0]["content_blocks"] == 1
+    assert report["pages"][0]["excluded_blocks"] == 2
+    assert report["pages"][0]["excluded_role_summary"] == {
+        "legal_footer": 1,
+        "page_number": 1,
+    }
+    assert 'excluded_roles: {"legal_footer": 1, "page_number": 1}' in text
 
 
 

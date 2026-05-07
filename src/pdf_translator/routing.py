@@ -60,6 +60,12 @@ def build_document_routing_report(
         text_blocks = page.get("text_blocks", [])
         ocr_candidates = page.get("ocr_candidates", [])
         content_blocks = [block for block in text_blocks if block.get("role", "content") == "content"]
+        excluded_blocks = [block for block in text_blocks if block.get("role", "content") != "content"]
+        excluded_role_summary = Counter(
+            block.get("role", "unknown")
+            for block in excluded_blocks
+        )
+        native_text_chars = len(page.get("raw_text", ""))
         route, reasons = _classify_page_route(page)
         route_counts[route] += 1
 
@@ -68,11 +74,15 @@ def build_document_routing_report(
                 "page_number": page.get("page_number"),
                 "route": route,
                 "reasons": reasons,
-                "raw_chars": len(page.get("raw_text", "")),
+                "native_text_chars": native_text_chars,
+                "raw_chars": native_text_chars,
                 "image_count": page.get("image_count", 0),
                 "block_count": page.get("block_count", len(text_blocks)),
+                "content_blocks": len(content_blocks),
                 "content_block_count": len(content_blocks),
+                "excluded_blocks": len(excluded_blocks),
                 "non_content_block_count": len(text_blocks) - len(content_blocks),
+                "excluded_role_summary": dict(excluded_role_summary),
                 "ocr_candidate_count": len(ocr_candidates),
             }
         )
@@ -95,10 +105,18 @@ def routing_report_to_text(report: dict[str, Any]) -> str:
     ]
 
     for page in report.get("pages", []):
+        excluded_summary = page.get("excluded_role_summary", {})
         lines.append(
-            f"Page {page['page_number']}: route={page['route']} chars={page['raw_chars']} images={page['image_count']} "
-            f"blocks={page['block_count']} content_blocks={page['content_block_count']} ocr_candidates={page.get('ocr_candidate_count', 0)}"
+            f"Page {page['page_number']}: route={page['route']} "
+            f"native_text_chars={page.get('native_text_chars', page.get('raw_chars', 0))} "
+            f"image_count={page['image_count']} ocr_candidate_count={page.get('ocr_candidate_count', 0)} "
+            f"blocks={page['block_count']} content_blocks={page.get('content_blocks', page.get('content_block_count', 0))} "
+            f"excluded_blocks={page.get('excluded_blocks', page.get('non_content_block_count', 0))}"
         )
+        if excluded_summary:
+            lines.append(
+                f"  excluded_roles: {json.dumps(excluded_summary, ensure_ascii=False, sort_keys=True)}"
+            )
         if page.get("reasons"):
             lines.append(f"  reasons: {', '.join(page['reasons'])}")
 
