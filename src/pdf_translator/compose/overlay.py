@@ -650,11 +650,168 @@ def write_translation_preview_report(
     return json_path, text_path
 
 
+def _text_length(text: str) -> int:
+    return len(text.replace("\n", " ").strip())
+
+
+def _line_count(text: str) -> int:
+    return len([line for line in text.splitlines() if line.strip()])
+
+
+def _bbox_dimensions(bbox: dict[str, Any]) -> tuple[float, float, float]:
+    width = max(0.0, float(bbox.get("x1", 0.0)) - float(bbox.get("x0", 0.0)))
+    height = max(0.0, float(bbox.get("y1", 0.0)) - float(bbox.get("y0", 0.0)))
+    return width, height, width * height
+
+
+def _line_fit_diagnostics(line: dict[str, Any]) -> dict[str, Any]:
+    text = line.get("text", "")
+    bbox = line.get("bbox", {})
+    width, height, _ = _bbox_dimensions(bbox)
+    usable_width = max(1.0, width - 4.0)
+    source_font_size = float(line.get("source_font_size") or 12.0)
+    fontname = _map_source_font_to_overlay_font(line.get("source_font"))
+    rendered_width = fitz.get_text_length(text, fontname=fontname, fontsize=source_font_size)
+    width_ratio = rendered_width / usable_width if usable_width else 0.0
+    fitted_font_size = _fit_single_line_fontsize(
+        fitz.Rect(0, 0, max(1.0, width), max(1.0, height)),
+        text,
+        fontname,
+        source_font_size,
+        max(6.0, source_font_size - 3.0),
+    )
+
+    return {
+        "text_length": _text_length(text),
+        "bbox_width": round(width, 2),
+        "bbox_height": round(height, 2),
+        "source_font_size": round(source_font_size, 2),
+        "rendered_width_at_source_size": round(rendered_width, 2),
+        "width_ratio_at_source_size": round(width_ratio, 2),
+        "fitted_font_size": round(fitted_font_size, 2),
+    }
+
+
+def _build_native_fit_diagnostics(region: dict[str, Any]) -> dict[str, Any]:
+    source_text = region.get("source_text", "")
+    translated_text = region.get("translated_text", "")
+    bbox = region.get("bbox", {})
+    translated_lines = region.get("translated_lines") or []
+    source_len = _text_length(source_text)
+    translated_len = _text_length(translated_text)
+    width, height, area = _bbox_dimensions(bbox)
+    translated_density = (translated_len / area * 1000.0) if area else 0.0
+    source_line_count = _line_count(source_text)
+    translated_line_count = len(translated_lines) if translated_lines else _line_count(translated_text)
+
+    line_diagnostics = [_line_fit_diagnostics(line) for line in translated_lines if line.get("bbox")]
+    max_line_width_ratio = max(
+        (line["width_ratio_at_source_size"] for line in line_diagnostics),
+        default=0.0,
+    )
+    min_fitted_font_size = min(
+        (line["fitted_font_size"] for line in line_diagnostics),
+        default=None,
+    )
+    min_source_font_size = min(
+        (line["source_font_size"] for line in line_diagnostics),
+        default=None,
+    )
+
+    flags: list[str] = []
+    if area <= 0:
+        flags.append("missing_bbox")
+    if width < 24 or height < 6:
+        flags.append("very_small_region")
+    if translated_len == 0:
+        flags.append("empty_translation")
+    if source_len and translated_len / source_len > 1.6:
+        flags.append("large_translation_expansion")
+    if translated_len > 260:
+        flags.append("long_translation")
+    if source_line_count and translated_line_count > source_line_count + 1:
+        flags.append("more_translated_lines_than_source")
+    if translated_density > 18.0:
+        flags.append("dense_text_for_region")
+    if max_line_width_ratio > 1.0:
+        flags.append("translated_line_overflow")
+    if max_line_width_ratio > 1.35:
+        flags.append("severe_line_overflow")
+    if (
+        min_fitted_font_size is not None
+        and min_source_font_size is not None
+        and min_fitted_font_size <= min_source_font_size - 2.5
+    ):
+        flags.append("requires_significant_font_shrink")
+
+    return {
+        "bbox_width": round(width, 2),
+        "bbox_height": round(height, 2),
+        "bbox_area": round(area, 2),
+        "source_line_count": source_line_count,
+        "translated_line_count": translated_line_count,
+        "translated_chars_per_1000pt2": round(translated_density, 2),
+        "max_line_width_ratio_at_source_size": round(max_line_width_ratio, 2),
+        "min_fitted_font_size": min_fitted_font_size,
+        "line_diagnostics": line_diagnostics,
+        "flags": sorted(flags),
+    }
+
+
+def _estimate_native_fit_risk(
+    role: str,
+    status: str,
+    overflow_ratio: float,
+    fit_diagnostics: dict[str, Any],
+) -> str:
+    flags = set(fit_diagnostics.get("flags", []))
+    density = float(fit_diagnostics.get("translated_chars_per_1000pt2", 0.0))
+    max_line_ratio = float(fit_diagnostics.get("max_line_width_ratio_at_source_size", 0.0))
+
+    if status == "timeout":
+        return "high"
+    if status != "translated":
+        return "low"
+    if flags & {"missing_bbox", "empty_translation", "severe_line_overflow"}:
+        return "high"
+    if "very_small_region" in flags and overflow_ratio > 1.15:
+        return "high"
+    if "large_translation_expansion" in flags and (density > 18.0 or max_line_ratio > 1.2):
+        return "high"
+    if density > 24.0 and not fit_diagnostics.get("line_diagnostics"):
+        return "high"
+
+    if role == "slide_title" and overflow_ratio <= 1.5:
+        return "medium" if overflow_ratio > 1.1 else "low"
+    if flags & {"translated_line_overflow", "requires_significant_font_shrink", "dense_text_for_region"}:
+        return "medium"
+    if overflow_ratio > 1.35:
+        return "high"
+    if overflow_ratio > 1.1:
+        return "medium"
+    return "low"
+
+
+def _native_apply_strategy(status: str, fit_risk: str, fit_diagnostics: dict[str, Any]) -> str:
+    flags = set(fit_diagnostics.get("flags", []))
+    if status == "timeout":
+        return "native_review_required"
+    if status != "translated":
+        return "native_skipped"
+    if fit_risk == "high" or flags & {"missing_bbox", "empty_translation", "severe_line_overflow"}:
+        return "native_review_required"
+    if flags & {"translated_line_overflow", "requires_significant_font_shrink", "dense_text_for_region"}:
+        return "native_overlay_with_fit_adjustment"
+    return "native_overlay_candidate"
+
+
 def build_replacement_plan(
     translation_preview_report: dict[str, Any],
 ) -> dict[str, Any]:
     page_reports: list[dict[str, Any]] = []
     total_replacements = 0
+    fit_risk_summary: Counter[str] = Counter()
+    apply_strategy_summary: Counter[str] = Counter()
 
     for page in translation_preview_report.get("pages", []):
         replacements: list[dict[str, Any]] = []
@@ -666,20 +823,14 @@ def build_replacement_plan(
             bbox = region["bbox"]
             role = region.get("role", "content")
 
-            source_len = len(source_text.replace("\n", " ").strip())
-            translated_len = len(translated_text.replace("\n", " ").strip())
+            source_len = _text_length(source_text)
+            translated_len = _text_length(translated_text)
             overflow_ratio = (translated_len / source_len) if source_len else 1.0
-
-            if status == "timeout":
-                fit_risk = "high"
-            elif role == "slide_title" and overflow_ratio <= 1.5:
-                fit_risk = "medium" if overflow_ratio > 1.1 else "low"
-            elif overflow_ratio > 1.35:
-                fit_risk = "high"
-            elif overflow_ratio > 1.1:
-                fit_risk = "medium"
-            else:
-                fit_risk = "low"
+            fit_diagnostics = _build_native_fit_diagnostics(region)
+            fit_risk = _estimate_native_fit_risk(role, status, overflow_ratio, fit_diagnostics)
+            apply_strategy = _native_apply_strategy(status, fit_risk, fit_diagnostics)
+            fit_risk_summary[fit_risk] += 1
+            apply_strategy_summary[apply_strategy] += 1
 
             replacements.append(
                 {
@@ -696,6 +847,8 @@ def build_replacement_plan(
                     "translated_length": translated_len,
                     "overflow_ratio": round(overflow_ratio, 2),
                     "fit_risk": fit_risk,
+                    "fit_diagnostics": fit_diagnostics,
+                    "apply_strategy": apply_strategy,
                 }
             )
 
@@ -712,6 +865,8 @@ def build_replacement_plan(
         "selected_pages": translation_preview_report.get("selected_pages", []),
         "page_count": len(page_reports),
         "total_replacements": total_replacements,
+        "fit_risk_summary": dict(fit_risk_summary),
+        "apply_strategy_summary": dict(apply_strategy_summary),
         "pages": page_reports,
     }
 
@@ -721,6 +876,8 @@ def replacement_plan_to_text(plan: dict[str, Any]) -> str:
         f"Selected pages: {plan['selected_pages']}",
         f"Replacement-plan pages: {plan['page_count']}",
         f"Total replacements: {plan['total_replacements']}",
+        f"Fit risks: {json.dumps(plan.get('fit_risk_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"Apply strategies: {json.dumps(plan.get('apply_strategy_summary', {}), ensure_ascii=False, sort_keys=True)}",
     ]
 
     for page in plan.get("pages", []):
@@ -729,9 +886,11 @@ def replacement_plan_to_text(plan: dict[str, Any]) -> str:
         )
         for item in page.get("replacements", [])[:4]:
             preview = item["translated_text"].replace("\n", " | ").strip()[:160]
+            flags = ",".join(item.get("fit_diagnostics", {}).get("flags", [])) or "none"
             lines.append(
                 f"  region {item['replacement_index']} [{item['status']}] risk={item['fit_risk']} "
-                f"ratio={item['overflow_ratio']} bbox={item['bbox']} text={preview}"
+                f"strategy={item.get('apply_strategy', 'unknown')} ratio={item['overflow_ratio']} "
+                f"flags={flags} bbox={item['bbox']} text={preview}"
             )
 
     return "\n".join(lines)
@@ -961,7 +1120,8 @@ def _draw_text_lines(
         source_font_name = (line.get("source_font") or "").lower()
         is_bold_source = "bold" in source_font_name
         if fit_risk == "medium" and is_bold_source and "\n" not in line.get("text", ""):
-            rect.x1 = max(rect.x1, page.rect.width - 24)
+            extra_width = min(24.0, rect.width * 0.25)
+            rect.x1 = min(page.rect.width - 24, rect.x1 + extra_width)
         translated_segments = line.get("translated_segments")
         if translated_segments:
             _draw_left_aligned_single_line_segments(
@@ -1147,6 +1307,8 @@ def render_overlay_prototype(
             total_considered += 1
 
             if replacement.get("status") not in allowed_statuses:
+                continue
+            if replacement.get("apply_strategy") in {"native_review_required", "native_skipped"}:
                 continue
             if replacement.get("fit_risk") not in allowed_fit_risks:
                 continue

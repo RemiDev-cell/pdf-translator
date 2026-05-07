@@ -413,7 +413,7 @@ def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> N
                         "translated_text": "Hello",
                         "source_color": 0,
                         "source_color_mode": "uniform",
-                        "bbox": {"x0": 1, "y0": 2, "x1": 3, "y1": 4},
+                        "bbox": {"x0": 10, "y0": 20, "x1": 130, "y1": 44},
                         "status": "translated",
                     },
                     {
@@ -438,8 +438,16 @@ def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> N
     assert plan["pages"][0]["replacements"][0]["fit_risk"] == "low"
     assert plan["pages"][0]["replacements"][0]["source_color"] == 0
     assert plan["pages"][0]["replacements"][0]["translated_lines"] is None
+    assert plan["pages"][0]["replacements"][0]["fit_diagnostics"]["flags"] == []
+    assert plan["pages"][0]["replacements"][0]["apply_strategy"] == "native_overlay_candidate"
     assert plan["pages"][0]["replacements"][1]["fit_risk"] == "high"
+    assert plan["fit_risk_summary"] == {"low": 1, "high": 1}
+    assert plan["apply_strategy_summary"] == {
+        "native_overlay_candidate": 1,
+        "native_review_required": 1,
+    }
     assert "Page 10: replacements=2" in text
+    assert "Apply strategies:" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -470,7 +478,46 @@ def test_build_replacement_plan_allows_medium_risk_for_translated_slide_titles()
     assert plan["pages"][0]["replacements"][0]["fit_risk"] == "medium"
 
 
-def test_render_overlay_prototype_applies_only_low_risk_translated(tmp_path) -> None:
+def test_build_replacement_plan_uses_line_geometry_for_narrow_regions() -> None:
+    translation_report = {
+        "selected_pages": [2],
+        "pages": [
+            {
+                "page_number": 2,
+                "regions": [
+                    {
+                        "role": "content",
+                        "source_text": "intitulé",
+                        "translated_text": "translated column heading",
+                        "source_color": 0,
+                        "source_color_mode": "uniform",
+                        "bbox": {"x0": 162.5, "y0": 188.0, "x1": 183.5, "y1": 195.0},
+                        "translated_lines": [
+                            {
+                                "text": "translated column heading",
+                                "bbox": {"x0": 162.5, "y0": 188.0, "x1": 183.5, "y1": 195.0},
+                                "source_font": "Arial",
+                                "source_font_size": 7.0,
+                                "source_color": 0,
+                                "source_color_mode": "uniform",
+                            }
+                        ],
+                        "status": "translated",
+                    }
+                ],
+            }
+        ],
+    }
+
+    plan = build_replacement_plan(translation_report)
+    replacement = plan["pages"][0]["replacements"][0]
+
+    assert replacement["fit_risk"] == "high"
+    assert replacement["apply_strategy"] == "native_review_required"
+    assert "severe_line_overflow" in replacement["fit_diagnostics"]["flags"]
+
+
+def test_render_overlay_prototype_skips_review_required_replacements(tmp_path) -> None:
     source_pdf = tmp_path / "source.pdf"
     doc = fitz.open()
     page = doc.new_page(width=200, height=200)
@@ -493,8 +540,9 @@ def test_render_overlay_prototype_applies_only_low_risk_translated(tmp_path) -> 
                     {
                         "bbox": {"x0": 10, "y0": 90, "x1": 150, "y1": 140},
                         "translated_text": "Ignored",
-                        "status": "timeout",
-                        "fit_risk": "high",
+                        "status": "translated",
+                        "fit_risk": "medium",
+                        "apply_strategy": "native_review_required",
                     },
                 ],
             }
