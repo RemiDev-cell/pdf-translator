@@ -781,6 +781,162 @@ def test_build_overlay_ready_report_classifies_table_and_caption_reading_flow() 
     ]
 
 
+def test_build_overlay_ready_report_groups_layout_units() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 400,
+                "height": 600,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "title",
+                        "bbox": {"x0": 20, "y0": 10, "x1": 180, "y1": 35},
+                        "text": "Tiramisu",
+                        "lines": [{"text": "Tiramisu", "bbox": {"x0": 20, "y0": 10, "x1": 180, "y1": 35}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "bbox": {"x0": 20, "y0": 40, "x1": 170, "y1": 55},
+                        "text": "Pour 4 personnes",
+                        "lines": [{"text": "Pour 4 personnes", "bbox": {"x0": 20, "y0": 40, "x1": 170, "y1": 55}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "section_step",
+                        "bbox": {"x0": 20, "y0": 100, "x1": 120, "y1": 125},
+                        "text": "Etape 1",
+                        "lines": [{"text": "Etape 1", "bbox": {"x0": 20, "y0": 100, "x1": 120, "y1": 125}}],
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "short_label",
+                        "bbox": {"x0": 20, "y0": 130, "x1": 160, "y1": 150},
+                        "text": "Preparer",
+                        "lines": [{"text": "Preparer", "bbox": {"x0": 20, "y0": 130, "x1": 160, "y1": 150}}],
+                    },
+                    {
+                        "block_index": 5,
+                        "role": "content",
+                        "bbox": {"x0": 20, "y0": 160, "x1": 180, "y1": 190},
+                        "text": "Sortir les ingredients",
+                        "lines": [{"text": "Sortir les ingredients", "bbox": {"x0": 20, "y0": 160, "x1": 180, "y1": 190}}],
+                    },
+                    {
+                        "block_index": 14,
+                        "role": "content",
+                        "bbox": {"x0": 250, "y0": 75, "x1": 330, "y1": 90},
+                        "text": "Cacao amer",
+                        "lines": [{"text": "Cacao amer", "bbox": {"x0": 250, "y0": 75, "x1": 330, "y1": 90}}],
+                    },
+                    {
+                        "block_index": 6,
+                        "role": "short_label",
+                        "bbox": {"x0": 250, "y0": 100, "x1": 340, "y1": 120},
+                        "text": "Ingredients",
+                        "lines": [{"text": "Ingredients", "bbox": {"x0": 250, "y0": 100, "x1": 340, "y1": 120}}],
+                    },
+                    {
+                        "block_index": 7,
+                        "role": "list_item",
+                        "bbox": {"x0": 250, "y0": 130, "x1": 340, "y1": 145},
+                        "text": "3 oeufs",
+                        "lines": [{"text": "3 oeufs", "bbox": {"x0": 250, "y0": 130, "x1": 340, "y1": 145}}],
+                    },
+                    {
+                        "block_index": 8,
+                        "role": "list_item",
+                        "bbox": {"x0": 250, "y0": 155, "x1": 360, "y1": 170},
+                        "text": "100g de sucre",
+                        "lines": [{"text": "100g de sucre", "bbox": {"x0": 250, "y0": 155, "x1": 360, "y1": 170}}],
+                    },
+                    {
+                        "block_index": 9,
+                        "role": "list_item",
+                        "bbox": {"x0": 20, "y0": 300, "x1": 190, "y1": 320},
+                        "text": "1. Melanger les jaunes",
+                        "lines": [{"text": "1. Melanger les jaunes", "bbox": {"x0": 20, "y0": 300, "x1": 190, "y1": 320}}],
+                    },
+                    {
+                        "block_index": 10,
+                        "role": "content",
+                        "bbox": {"x0": 20, "y0": 325, "x1": 190, "y1": 350},
+                        "text": "Ajouter le mascarpone",
+                        "lines": [{"text": "Ajouter le mascarpone", "bbox": {"x0": 20, "y0": 325, "x1": 190, "y1": 350}}],
+                    },
+                    {
+                        "block_index": 11,
+                        "role": "table_header",
+                        "bbox": {"x0": 220, "y0": 300, "x1": 320, "y1": 320},
+                        "text": "Dose",
+                        "lines": [{"text": "Dose", "bbox": {"x0": 220, "y0": 300, "x1": 320, "y1": 320}}],
+                    },
+                    {
+                        "block_index": 12,
+                        "role": "table_cell",
+                        "bbox": {"x0": 220, "y0": 325, "x1": 320, "y1": 345},
+                        "text": "4 parts",
+                        "lines": [{"text": "4 parts", "bbox": {"x0": 220, "y0": 325, "x1": 320, "y1": 345}}],
+                    },
+                    {
+                        "block_index": 13,
+                        "role": "caption",
+                        "bbox": {"x0": 20, "y0": 500, "x1": 220, "y1": 520},
+                        "text": "Figure 1: service",
+                        "lines": [{"text": "Figure 1: service", "bbox": {"x0": 20, "y0": 500, "x1": 220, "y1": 520}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    page = report["pages"][0]
+    groups_by_type = {
+        group["group_type"]: group
+        for group in page["layout_groups"]
+    }
+
+    assert report["layout_group_summary"] == {
+        "caption_group": 1,
+        "heading_group": 1,
+        "ingredient_list_group": 1,
+        "instruction_group": 1,
+        "step_group": 1,
+        "table_group": 1,
+    }
+    assert report["total_layout_group_review_items"] == 6
+    assert page["layout_group_count"] == 6
+    assert page["layout_group_review_item_count"] == 6
+    assert groups_by_type["step_group"]["block_indices"] == [3, 4, 5]
+    assert groups_by_type["ingredient_list_group"]["block_indices"] == [14, 6, 7, 8]
+    assert groups_by_type["instruction_group"]["block_indices"] == [9, 10]
+    assert groups_by_type["table_group"]["block_indices"] == [11, 12]
+    assert groups_by_type["heading_group"]["block_indices"] == [1, 2]
+    assert groups_by_type["caption_group"]["block_indices"] == [13]
+    assert {
+        candidate["block_index"]: candidate["layout_group"]["group_type"]
+        for candidate in page["candidates"]
+    } == {
+        1: "heading_group",
+        2: "heading_group",
+        3: "step_group",
+        4: "step_group",
+        5: "step_group",
+        14: "ingredient_list_group",
+        6: "ingredient_list_group",
+        7: "ingredient_list_group",
+        8: "ingredient_list_group",
+        9: "instruction_group",
+        10: "instruction_group",
+        11: "table_group",
+        12: "table_group",
+        13: "caption_group",
+    }
+
+
 def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
     document_ir = {
         "pages": [

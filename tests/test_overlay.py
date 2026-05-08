@@ -39,6 +39,10 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
                             "classification": "isolated_block",
                             "flags": [],
                         },
+                        "layout_group": {
+                            "group_id": "P10G0",
+                            "group_type": "heading_group",
+                        },
                         "lines": [
                             {"text": "line 1", "bbox": {"x0": 1, "y0": 2, "x1": 3, "y1": 4}},
                             {"text": "line 2", "bbox": {"x0": 5, "y0": 6, "x1": 7, "y1": 8}},
@@ -52,6 +56,17 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
                         "role": "slide_title",
                         "classification": "isolated_block",
                         "flags": ["review_large_vertical_gap_between_candidates"],
+                        "text_preview": "Useful translated block",
+                    }
+                ],
+                "layout_group_review_items": [
+                    {
+                        "page_number": 10,
+                        "group_id": "P10G0",
+                        "group_type": "heading_group",
+                        "candidate_count": 1,
+                        "block_indices": [98],
+                        "roles": ["slide_title"],
                         "text_preview": "Useful translated block",
                     }
                 ],
@@ -84,6 +99,8 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
     assert "page_zone_review_items" not in report["pages"][0]["regions"][0]
     assert "reading_flow" not in report["pages"][0]["regions"][0]
     assert "reading_flow_review_items" not in report["pages"][0]["regions"][0]
+    assert "layout_group" not in report["pages"][0]["regions"][0]
+    assert "layout_group_review_items" not in report["pages"][0]["regions"][0]
     assert "Page 10: regions=1" in text
     assert json_path.exists()
     assert text_path.exists()

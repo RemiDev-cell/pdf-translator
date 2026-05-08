@@ -294,7 +294,11 @@ def _candidate_page_zone_flags(item: dict[str, Any]) -> list[str]:
         flags.append("review_candidate_content_role_in_header_zone")
     if role in vertical_review_roles and vertical == "footer_zone":
         flags.append("review_candidate_content_role_in_footer_zone")
-    if role in margin_review_roles and horizontal in {"left_margin", "right_margin"}:
+    if (
+        role in margin_review_roles
+        and horizontal in {"left_margin", "right_margin"}
+        and item.get("layout_group", {}).get("group_type") != "ingredient_list_group"
+    ):
         flags.append("review_candidate_content_role_in_margin")
 
     return flags
@@ -517,6 +521,218 @@ def _reading_flow_review_items(
             items.append(review_item)
 
     return items
+
+
+def _candidate_y0(candidate: dict[str, Any]) -> float:
+    return float(candidate.get("bbox", {}).get("y0", 0.0) or 0.0)
+
+
+def _candidate_x0(candidate: dict[str, Any]) -> float:
+    return float(candidate.get("bbox", {}).get("x0", 0.0) or 0.0)
+
+
+def _is_quantity_list_candidate(candidate: dict[str, Any]) -> bool:
+    return candidate.get("role") == "list_item" and bool(QUANTITY_LIST_ITEM_RE.match(candidate.get("text", "").strip()))
+
+
+def _is_numbered_instruction_candidate(candidate: dict[str, Any]) -> bool:
+    return candidate.get("role") == "list_item" and bool(re.match(r"^\s*\d{1,2}[.)]\s+", candidate.get("text", "")))
+
+
+def _same_column_candidate(anchor: dict[str, Any], candidate: dict[str, Any], page_width: float) -> bool:
+    overlap = _horizontal_overlap_ratio(anchor.get("bbox", {}), candidate.get("bbox", {}))
+    if overlap >= 0.25:
+        return True
+    anchor_x = _bbox_metrics(anchor.get("bbox", {}), page_width, 1.0)["x_center"]
+    candidate_x = _bbox_metrics(candidate.get("bbox", {}), page_width, 1.0)["x_center"]
+    return abs(anchor_x - candidate_x) <= max(48.0, page_width * 0.18)
+
+
+def _group_bbox(candidates: list[dict[str, Any]]) -> dict[str, float]:
+    return _merge_bboxes(candidates) if candidates else {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0}
+
+
+def _make_layout_group(
+    group_index: int,
+    group_type: str,
+    members: list[dict[str, Any]],
+    page_number: int | None,
+) -> dict[str, Any]:
+    group_id = f"P{page_number or 0}G{group_index}"
+    ordered_members = sorted(members, key=lambda item: (_candidate_y0(item), _candidate_x0(item)))
+    return {
+        "group_id": group_id,
+        "group_index": group_index,
+        "group_type": group_type,
+        "candidate_count": len(ordered_members),
+        "block_indices": [item.get("block_index") for item in ordered_members],
+        "roles": [item.get("role") for item in ordered_members],
+        "bbox": _group_bbox(ordered_members),
+        "text_preview": " | ".join(
+            item.get("text", "").replace("\n", " | ").strip()
+            for item in ordered_members[:3]
+            if item.get("text", "").strip()
+        )[:160],
+    }
+
+
+def _assign_layout_group_to_members(group: dict[str, Any], members: list[dict[str, Any]]) -> None:
+    ordered_members = sorted(members, key=lambda item: (_candidate_y0(item), _candidate_x0(item)))
+    for position, candidate in enumerate(ordered_members):
+        candidate["layout_group"] = {
+            "group_id": group["group_id"],
+            "group_index": group["group_index"],
+            "group_type": group["group_type"],
+            "position_in_group": position,
+            "candidate_count": group["candidate_count"],
+        }
+
+
+def _add_layout_group(
+    groups: list[dict[str, Any]],
+    assigned: set[int],
+    group_type: str,
+    member_indexes: list[int],
+    candidates: list[dict[str, Any]],
+    page_number: int | None,
+) -> None:
+    unique_indexes = sorted(set(member_indexes), key=lambda idx: (_candidate_y0(candidates[idx]), _candidate_x0(candidates[idx])))
+    if not unique_indexes:
+        return
+
+    members = [candidates[index] for index in unique_indexes]
+    group = _make_layout_group(len(groups), group_type, members, page_number)
+    groups.append(group)
+    _assign_layout_group_to_members(group, members)
+    assigned.update(unique_indexes)
+
+
+def _annotate_layout_groups(
+    candidates: list[dict[str, Any]],
+    page_number: int | None,
+    page_width: float,
+    page_height: float,
+) -> tuple[list[dict[str, Any]], Counter[str]]:
+    groups: list[dict[str, Any]] = []
+    assigned: set[int] = set()
+
+    table_indexes = [
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.get("role") in {"table_header", "table_cell"}
+    ]
+    _add_layout_group(groups, assigned, "table_group", table_indexes, candidates, page_number)
+
+    for index, candidate in enumerate(candidates):
+        if index in assigned or candidate.get("role") != "section_step":
+            continue
+        members = [index]
+        for other_index, other in enumerate(candidates):
+            if other_index in assigned or other_index == index:
+                continue
+            if other.get("role") not in {"short_label", "content"}:
+                continue
+            if _candidate_y0(other) < _candidate_y0(candidate):
+                continue
+            if _candidate_y0(other) > _candidate_y0(candidate) + max(180.0, page_height * 0.28):
+                continue
+            if _same_column_candidate(candidate, other, page_width):
+                members.append(other_index)
+        _add_layout_group(groups, assigned, "step_group", members, candidates, page_number)
+
+    quantity_ingredient_indexes = [
+        index
+        for index, candidate in enumerate(candidates)
+        if index not in assigned
+        and _is_quantity_list_candidate(candidate)
+    ]
+    ingredient_indexes = list(quantity_ingredient_indexes)
+    if quantity_ingredient_indexes:
+        for index, candidate in enumerate(candidates):
+            if index in assigned or index in ingredient_indexes:
+                continue
+            if candidate.get("role") != "short_label" or "ingr" not in candidate.get("text", "").casefold():
+                continue
+            if any(_same_column_candidate(candidates[anchor_index], candidate, page_width) for anchor_index in quantity_ingredient_indexes):
+                ingredient_indexes.append(index)
+    if ingredient_indexes:
+        ingredient_y_values = [_candidate_y0(candidates[index]) for index in ingredient_indexes]
+        min_ingredient_y = min(ingredient_y_values) - 80.0
+        max_ingredient_y = max(ingredient_y_values) + 140.0
+        for index, candidate in enumerate(candidates):
+            if index in assigned or index in ingredient_indexes:
+                continue
+            if candidate.get("role") != "content" or int(candidate.get("line_count", 0) or 0) > 2:
+                continue
+            if not (min_ingredient_y <= _candidate_y0(candidate) <= max_ingredient_y):
+                continue
+            if any(_same_column_candidate(candidates[anchor_index], candidate, page_width) for anchor_index in quantity_ingredient_indexes):
+                ingredient_indexes.append(index)
+    _add_layout_group(groups, assigned, "ingredient_list_group", ingredient_indexes, candidates, page_number)
+
+    instruction_anchors = [
+        index
+        for index, candidate in enumerate(candidates)
+        if index not in assigned and _is_numbered_instruction_candidate(candidate)
+    ]
+    instruction_indexes = list(instruction_anchors)
+    for anchor_index in instruction_anchors:
+        anchor = candidates[anchor_index]
+        for other_index, other in enumerate(candidates):
+            if other_index in assigned or other_index in instruction_indexes:
+                continue
+            if other.get("role") != "content":
+                continue
+            if _candidate_y0(other) < _candidate_y0(anchor):
+                continue
+            if _candidate_y0(other) > _candidate_y0(anchor) + max(220.0, page_height * 0.35):
+                continue
+            if _same_column_candidate(anchor, other, page_width):
+                instruction_indexes.append(other_index)
+    _add_layout_group(groups, assigned, "instruction_group", instruction_indexes, candidates, page_number)
+
+    for index, candidate in enumerate(candidates):
+        if index in assigned or candidate.get("role") not in {"title", "slide_title"}:
+            continue
+        members = [index]
+        for other_index, other in enumerate(candidates):
+            if other_index in assigned or other_index == index:
+                continue
+            if other.get("role") not in {"content", "short_label"}:
+                continue
+            if other.get("page_zone", {}).get("vertical") != "header_zone":
+                continue
+            if abs(_candidate_y0(other) - _candidate_y0(candidate)) <= max(80.0, page_height * 0.08):
+                members.append(other_index)
+        _add_layout_group(groups, assigned, "heading_group", members, candidates, page_number)
+
+    for index, candidate in enumerate(candidates):
+        if index in assigned or candidate.get("role") not in {"caption", "diagram_label"}:
+            continue
+        _add_layout_group(groups, assigned, "caption_group", [index], candidates, page_number)
+
+    for index, candidate in enumerate(candidates):
+        if index in assigned:
+            continue
+        _add_layout_group(groups, assigned, "isolated_group", [index], candidates, page_number)
+
+    return groups, Counter(group["group_type"] for group in groups)
+
+
+def _layout_group_review_items(groups: list[dict[str, Any]], page_number: int | None) -> list[dict[str, Any]]:
+    return [
+        {
+            "page_number": page_number,
+            "group_id": group["group_id"],
+            "group_type": group["group_type"],
+            "candidate_count": group["candidate_count"],
+            "block_indices": group["block_indices"],
+            "roles": group["roles"],
+            "text_preview": group["text_preview"],
+        }
+        for group in groups
+        if group["group_type"] != "isolated_group"
+    ]
 
 
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
@@ -1011,6 +1227,7 @@ def build_overlay_ready_report(
     page_reports: list[dict[str, Any]] = []
     overall_page_zone_review_items: list[dict[str, Any]] = []
     overall_reading_flow_review_items: list[dict[str, Any]] = []
+    overall_layout_group_review_items: list[dict[str, Any]] = []
     total_candidate_blocks = 0
     total_candidate_lines = 0
     total_excluded_blocks = 0
@@ -1019,6 +1236,7 @@ def build_overlay_ready_report(
     overall_page_zone_flags: Counter[str] = Counter()
     overall_reading_flow_classifications: Counter[str] = Counter()
     overall_reading_flow_flags: Counter[str] = Counter()
+    overall_layout_groups: Counter[str] = Counter()
     overall_candidate_vertical_zones: Counter[str] = Counter()
     overall_candidate_horizontal_zones: Counter[str] = Counter()
     overall_excluded_vertical_zones: Counter[str] = Counter()
@@ -1111,6 +1329,13 @@ def build_overlay_ready_report(
             candidates.append(candidate)
 
         reading_flow_summary, reading_flow_flag_summary = _annotate_reading_flow(candidates, page_height)
+        layout_groups, layout_group_summary = _annotate_layout_groups(
+            candidates,
+            page.get("page_number"),
+            page_width,
+            page_height,
+        )
+        layout_group_review_items = _layout_group_review_items(layout_groups, page.get("page_number"))
         reading_flow_review_items = _reading_flow_review_items(
             candidates,
             page.get("page_number"),
@@ -1121,6 +1346,7 @@ def build_overlay_ready_report(
             excluded_blocks,
             page.get("page_number"),
         )
+        overall_layout_group_review_items.extend(layout_group_review_items)
         overall_reading_flow_review_items.extend(reading_flow_review_items)
         overall_page_zone_review_items.extend(page_zone_review_items)
         total_candidate_blocks += len(candidates)
@@ -1151,6 +1377,7 @@ def build_overlay_ready_report(
         overall_page_zone_flags.update(page_zone_flag_summary)
         overall_reading_flow_classifications.update(reading_flow_summary)
         overall_reading_flow_flags.update(reading_flow_flag_summary)
+        overall_layout_groups.update(layout_group_summary)
         _merge_page_zone_field_summary(
             overall_candidate_page_zone_role_summary,
             candidate_page_zone_role_summary,
@@ -1172,6 +1399,11 @@ def build_overlay_ready_report(
                 "reading_flow_flag_summary": dict(reading_flow_flag_summary),
                 "reading_flow_review_item_count": len(reading_flow_review_items),
                 "reading_flow_review_items": reading_flow_review_items,
+                "layout_group_summary": dict(layout_group_summary),
+                "layout_group_count": len(layout_groups),
+                "layout_groups": layout_groups,
+                "layout_group_review_item_count": len(layout_group_review_items),
+                "layout_group_review_items": layout_group_review_items,
                 "page_zone_flag_summary": dict(page_zone_flag_summary),
                 "page_zone_review_item_count": len(page_zone_review_items),
                 "page_zone_review_items": page_zone_review_items,
@@ -1192,11 +1424,14 @@ def build_overlay_ready_report(
         "total_excluded_blocks": total_excluded_blocks,
         "total_page_zone_review_items": len(overall_page_zone_review_items),
         "total_reading_flow_review_items": len(overall_reading_flow_review_items),
+        "total_layout_group_review_items": len(overall_layout_group_review_items),
         "selection_reason_summary": dict(overall_selection_reasons),
         "exclusion_reason_summary": dict(overall_exclusion_reasons),
         "reading_flow_summary": dict(overall_reading_flow_classifications),
         "reading_flow_flag_summary": dict(overall_reading_flow_flags),
         "reading_flow_review_items": overall_reading_flow_review_items,
+        "layout_group_summary": dict(overall_layout_groups),
+        "layout_group_review_items": overall_layout_group_review_items,
         "page_zone_flag_summary": dict(overall_page_zone_flags),
         "page_zone_review_items": overall_page_zone_review_items,
         "candidate_page_zone_summary": {
@@ -1226,6 +1461,7 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         f"Total excluded blocks: {report.get('total_excluded_blocks', 0)}",
         f"Total page zone review items: {report.get('total_page_zone_review_items', 0)}",
         f"Total reading flow review items: {report.get('total_reading_flow_review_items', 0)}",
+        f"Total layout group review items: {report.get('total_layout_group_review_items', 0)}",
     ]
     if report.get("selection_reason_summary"):
         lines.append(
@@ -1242,6 +1478,10 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
     if report.get("reading_flow_flag_summary"):
         lines.append(
             f"Reading flow flags: {json.dumps(report['reading_flow_flag_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("layout_group_summary"):
+        lines.append(
+            f"Layout groups: {json.dumps(report['layout_group_summary'], ensure_ascii=False, sort_keys=True)}"
         )
     if report.get("page_zone_flag_summary"):
         lines.append(
@@ -1270,7 +1510,8 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             f"candidate_lines={page['candidate_line_count']} "
             f"excluded_blocks={page.get('excluded_block_count', 0)} "
             f"page_zone_review_items={page.get('page_zone_review_item_count', 0)} "
-            f"reading_flow_review_items={page.get('reading_flow_review_item_count', 0)}"
+            f"reading_flow_review_items={page.get('reading_flow_review_item_count', 0)} "
+            f"layout_groups={page.get('layout_group_count', 0)}"
         )
         if page.get("candidate_page_zone_summary"):
             lines.append(
@@ -1291,6 +1532,16 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         if page.get("reading_flow_flag_summary"):
             lines.append(
                 f"  reading flow flags: {json.dumps(page['reading_flow_flag_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("layout_group_summary"):
+            lines.append(
+                f"  layout groups: {json.dumps(page['layout_group_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        for review_item in page.get("layout_group_review_items", [])[:5]:
+            preview = review_item.get("text_preview", "")
+            lines.append(
+                f"  layout group {review_item.get('group_id')} [{review_item.get('group_type')}]: "
+                f"blocks={review_item.get('block_indices', [])} text={preview}"
             )
         for review_item in page.get("reading_flow_review_items", [])[:5]:
             preview = review_item.get("text_preview", "")
@@ -1318,10 +1569,12 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         for candidate in page.get("candidates", [])[:3]:
             preview = candidate["text"].replace("\n", " | ").strip()[:180]
             reading_flow = candidate.get("reading_flow", {})
+            layout_group = candidate.get("layout_group", {})
             lines.append(
                 f"  block {candidate['block_index']} [{candidate.get('selection_reason', 'selected_as_unknown')}]: "
                 f"lines={candidate['line_count']} "
-                f"flow={reading_flow.get('classification', 'unknown_flow')} text={preview}"
+                f"flow={reading_flow.get('classification', 'unknown_flow')} "
+                f"group={layout_group.get('group_type', 'unknown_group')} text={preview}"
             )
         for excluded in page.get("excluded_blocks", [])[:3]:
             preview = excluded["text"].replace("\n", " | ").strip()[:180]

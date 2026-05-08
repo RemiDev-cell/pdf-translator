@@ -158,6 +158,10 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
                             "classification": "isolated_block",
                             "flags": [],
                         },
+                        "layout_group": {
+                            "group_id": "P1G0",
+                            "group_type": "heading_group",
+                        },
                         "text": "Bloc natif principal avec assez de texte pour la revue.",
                     }
                 ],
@@ -168,6 +172,17 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
                         "role": "content",
                         "classification": "isolated_block",
                         "flags": ["review_large_vertical_gap_between_candidates"],
+                        "text_preview": "Bloc natif principal avec assez de texte pour la revue.",
+                    }
+                ],
+                "layout_group_review_items": [
+                    {
+                        "page_number": 1,
+                        "group_id": "P1G0",
+                        "group_type": "heading_group",
+                        "candidate_count": 1,
+                        "block_indices": [2],
+                        "roles": ["content"],
                         "text_preview": "Bloc natif principal avec assez de texte pour la revue.",
                     }
                 ],
@@ -220,6 +235,8 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
     assert 'page_zone_review_items' not in report['pages'][0]['native_regions'][0]
     assert 'reading_flow' not in report['pages'][0]['native_regions'][0]
     assert 'reading_flow_review_items' not in report['pages'][0]['native_regions'][0]
+    assert 'layout_group' not in report['pages'][0]['native_regions'][0]
+    assert 'layout_group_review_items' not in report['pages'][0]['native_regions'][0]
     assert report['pages'][0]['ocr_regions'][0]['ocr_backend'] == 'tesseract'
     assert report['pages'][0]['ocr_regions'][0]['text'] == full_ocr_text
     assert 'native B2' in text
