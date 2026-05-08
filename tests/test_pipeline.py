@@ -124,6 +124,75 @@ def _make_simple_table_pdf(pdf_path: Path) -> None:
     doc.close()
 
 
+def _write_text_image(image_path: Path) -> None:
+    image_doc = fitz.open()
+    image_page = image_doc.new_page(width=220, height=90)
+    image_page.insert_text((16, 28), "Bloc OCR probable", fontsize=14)
+    image_page.insert_text((16, 52), "Texte dans une image", fontsize=12)
+    pixmap = image_page.get_pixmap(alpha=False)
+    pixmap.save(image_path)
+    image_doc.close()
+
+
+def _make_hybrid_native_and_ocr_candidate_pdf(pdf_path: Path, tmp_path: Path) -> None:
+    decorative_path = tmp_path / "small-decorative.png"
+    decorative = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), 0)
+    decorative.clear_with(0x66CCFF)
+    decorative.save(decorative_path)
+
+    text_image_path = tmp_path / "text-image.png"
+    _write_text_image(text_image_path)
+
+    doc = fitz.open()
+    page = doc.new_page(width=420, height=560)
+    page.insert_textbox(
+        fitz.Rect(32, 40, 388, 78),
+        "NOTE TECHNIQUE HYBRIDE",
+        fontsize=15,
+    )
+    page.insert_textbox(
+        fitz.Rect(32, 104, 388, 160),
+        (
+            "Ce paragraphe reste disponible sous forme native et doit rester "
+            "dans les candidats overlay."
+        ),
+        fontsize=10,
+    )
+    page.insert_image(fitz.Rect(32, 180, 48, 196), filename=str(decorative_path))
+    page.insert_image(fitz.Rect(82, 220, 302, 310), filename=str(text_image_path))
+    page.insert_textbox(
+        fitz.Rect(82, 326, 338, 350),
+        "Figure 1 : Capture contenant du texte non natif.",
+        fontsize=9,
+    )
+    doc.save(pdf_path)
+    doc.close()
+
+
+def _write_scanned_page_image(image_path: Path) -> None:
+    image_doc = fitz.open()
+    image_page = image_doc.new_page(width=360, height=460)
+    image_page.insert_text((34, 58), "Document scanne", fontsize=18)
+    image_page.insert_text((34, 104), "Cette page ne contient", fontsize=13)
+    image_page.insert_text((34, 128), "aucun texte natif.", fontsize=13)
+    image_page.insert_text((34, 178), "Mesure: 42 V", fontsize=13)
+    image_page.insert_text((34, 226), "Conclusion experimentale", fontsize=13)
+    pixmap = image_page.get_pixmap(alpha=False)
+    pixmap.save(image_path)
+    image_doc.close()
+
+
+def _make_scanned_image_only_pdf(pdf_path: Path, tmp_path: Path) -> None:
+    scanned_image_path = tmp_path / "scanned-page.png"
+    _write_scanned_page_image(scanned_image_path)
+
+    doc = fitz.open()
+    page = doc.new_page(width=420, height=560)
+    page.insert_image(fitz.Rect(30, 40, 390, 500), filename=str(scanned_image_path))
+    doc.save(pdf_path)
+    doc.close()
+
+
 def test_run_native_overlay_preview_writes_artifact_chain(tmp_path: Path) -> None:
     pdf_path = tmp_path / "native.pdf"
     doc = fitz.open()
@@ -202,6 +271,90 @@ def test_run_document_preview_routes_image_pages_to_fusion(tmp_path: Path) -> No
     assert result["paths"]["routing_text"].exists()
     assert result["preview_result"]["paths"]["diagnostics_pdf"].exists()
     assert result["routing_report"]["route_summary"] == {"native_plus_ocr_candidates": 1}
+
+
+def test_run_document_preview_routes_hybrid_page_with_decorative_and_text_images(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "hybrid-native-ocr.pdf"
+    _make_hybrid_native_and_ocr_candidate_pdf(pdf_path, tmp_path)
+
+    result = run_document_preview(
+        pdf_path=pdf_path,
+        output_dir=tmp_path,
+        selected_pages=[1],
+        translate_text_fn=lambda text: f"EN {text}",
+        backend="mock",
+        artifact_stem="hybrid_native_ocr",
+    )
+
+    assert result["preview_mode"] == "native_ocr_fusion"
+    assert result["routing_report"]["route_summary"] == {"native_plus_ocr_candidates": 1}
+
+    page_report = result["routing_report"]["pages"][0]
+    assert page_report["image_count"] == 2
+    assert page_report["image_block_count"] == 2
+    assert page_report["ocr_candidate_count"] == 1
+    assert page_report["ignored_ocr_image_count"] == 1
+    assert page_report["ignored_ocr_image_reason_summary"] == {
+        "image_too_small_for_ocr": 1,
+    }
+    assert "has_ocr_candidate_regions" in page_report["reasons"]
+    assert "no_ocr_sized_image_regions" not in page_report["reasons"]
+
+    preview_result = result["preview_result"]
+    assert preview_result["ocr_candidate_report"]["total_candidates"] == 1
+    assert len(preview_result["paths"]["crop_paths"]) == 1
+
+    overlay_page = preview_result["fusion_plan"]["pages"][0]
+    native_segments = [
+        segment
+        for segment in overlay_page["segments"]
+        if segment["source_kind"] == "native"
+    ]
+    ocr_segments = [
+        segment
+        for segment in overlay_page["segments"]
+        if segment["source_kind"] == "ocr"
+    ]
+    assert any("Ce paragraphe reste disponible" in segment["text"] for segment in native_segments)
+    assert len(ocr_segments) == 1
+
+
+def test_run_document_preview_routes_scanned_image_only_page_to_ocr(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned-image-only.pdf"
+    _make_scanned_image_only_pdf(pdf_path, tmp_path)
+
+    result = run_document_preview(
+        pdf_path=pdf_path,
+        output_dir=tmp_path,
+        selected_pages=[1],
+        translate_text_fn=lambda text: f"EN {text}",
+        backend="mock",
+        artifact_stem="scanned_image_only",
+    )
+
+    assert result["preview_mode"] == "native_ocr_fusion"
+    assert result["routing_report"]["pdf_kind"] == "scanned"
+    assert result["routing_report"]["route_summary"] == {"ocr_only": 1}
+
+    page_report = result["routing_report"]["pages"][0]
+    assert page_report["native_text_chars"] == 0
+    assert page_report["image_count"] == 1
+    assert page_report["image_block_count"] == 1
+    assert page_report["content_blocks"] == 0
+    assert page_report["ocr_candidate_count"] == 1
+    assert page_report["ignored_ocr_image_count"] == 0
+    assert page_report["ignored_ocr_image_reason_summary"] == {}
+    assert page_report["reasons"] == [
+        "contains_raster_images",
+        "has_ocr_candidate_regions",
+    ]
+
+    preview_result = result["preview_result"]
+    assert preview_result["ocr_candidate_report"]["total_candidates"] == 1
+    assert len(preview_result["paths"]["crop_paths"]) == 1
+
+    overlay_page = preview_result["fusion_plan"]["pages"][0]
+    assert {segment["source_kind"] for segment in overlay_page["segments"]} == {"ocr"}
 
 
 def test_run_document_preview_keeps_admin_like_pdf_native_with_decorative_image(tmp_path: Path) -> None:
