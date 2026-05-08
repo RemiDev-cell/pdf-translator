@@ -9,6 +9,10 @@ PageRoute = str
 NATIVE_TRANSLATABLE_ROLES = {
     "content",
     "slide_title",
+    "title",
+    "section_step",
+    "short_label",
+    "list_item",
     "caption",
     "table_cell",
     "table_header",

@@ -248,6 +248,90 @@ def test_annotate_repeated_blocks_marks_simple_table_run() -> None:
     assert roles == ["table_header", "table_cell", "content"]
 
 
+def test_annotate_repeated_blocks_marks_typographic_structure_roles() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "height": 800,
+                "text_blocks": [
+                    {
+                        "bbox": {"y0": 40, "y1": 76},
+                        "text": "Recette experimentale",
+                        "lines": [
+                            {
+                                "text": "Recette experimentale",
+                                "bbox": {"x0": 40, "y0": 40, "x1": 260, "y1": 76},
+                                "spans": [{"text": "Recette experimentale", "size": 24, "flags": 4}],
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 120, "y1": 144},
+                        "text": "Étape 1",
+                        "lines": [
+                            {
+                                "text": "Étape 1",
+                                "bbox": {"x0": 40, "y0": 120, "x1": 110, "y1": 144},
+                                "spans": [{"text": "Étape 1", "size": 18, "flags": 4}],
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 170, "y1": 190},
+                        "text": "Préparer",
+                        "lines": [
+                            {
+                                "text": "Préparer",
+                                "bbox": {"x0": 40, "y0": 170, "x1": 120, "y1": 190},
+                                "spans": [{"text": "Préparer", "size": 12, "flags": 20}],
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 220, "y1": 238},
+                        "text": "1. Mélanger les poudres",
+                        "lines": [
+                            {
+                                "text": "1. Mélanger les poudres",
+                                "bbox": {"x0": 40, "y0": 220, "x1": 210, "y1": 238},
+                                "spans": [{"text": "1. Mélanger les poudres", "size": 10, "flags": 4}],
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 250, "y1": 268},
+                        "text": "250g de mascarpone",
+                        "lines": [
+                            {
+                                "text": "250g de mascarpone",
+                                "bbox": {"x0": 40, "y0": 250, "x1": 180, "y1": 268},
+                                "spans": [{"text": "250g de mascarpone", "size": 10, "flags": 4}],
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": {"y0": 300, "y1": 318},
+                        "text": "Le protocole est ensuite stabilisé par refroidissement.",
+                        "lines": [
+                            {
+                                "text": "Le protocole est ensuite stabilisé par refroidissement.",
+                                "bbox": {"x0": 40, "y0": 300, "x1": 340, "y1": 318},
+                                "spans": [{"text": "Le protocole est ensuite stabilisé par refroidissement.", "size": 10, "flags": 4}],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    annotated = annotate_repeated_blocks(document_ir)
+    roles = [block["role"] for block in annotated["pages"][0]["text_blocks"]]
+
+    assert roles == ["title", "section_step", "short_label", "list_item", "list_item", "content"]
+
+
 def test_write_audit_report_writes_json_and_text(tmp_path) -> None:
     report = {
         "selected_pages": [1],
@@ -306,9 +390,22 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     json_path, text_path = write_overlay_ready_report(report, tmp_path, "overlay_ready")
 
     assert report["total_candidate_blocks"] == 2
+    assert report["total_excluded_blocks"] == 1
+    assert report["selection_reason_summary"] == {
+        "selected_as_content": 1,
+        "selected_as_title": 1,
+    }
+    assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
+    assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
     assert report["pages"][0]["candidates"][1]["block_index"] == 2
+    assert report["pages"][0]["candidates"][1]["selection_reason"] == "selected_as_title"
+    assert report["pages"][0]["excluded_blocks"][0]["block_index"] == 0
+    assert report["pages"][0]["excluded_blocks"][0]["exclusion_reason"] == "excluded_as_footer"
     assert "candidate_blocks=2" in text
+    assert "excluded_blocks=1" in text
+    assert "selected_as_content" in text
+    assert "excluded_as_footer" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -350,6 +447,9 @@ def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
     assert report["total_candidate_blocks"] == 1
     assert report["pages"][0]["candidates"][0]["text"] == "MAIN TITLE - 2"
     assert report["pages"][0]["candidates"][0]["bbox"] == {"x0": 100.0, "y0": 10.0, "x1": 320.0, "y1": 30.0}
+    assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_title"
+    assert report["pages"][0]["candidates"][0]["merged_block_indices"] == [3, 4, 5]
+    assert report["total_excluded_blocks"] == 0
 
 
 def test_build_overlay_ready_report_keeps_only_glossary_backed_diagram_labels() -> None:
@@ -380,12 +480,134 @@ def test_build_overlay_ready_report_keeps_only_glossary_backed_diagram_labels() 
     report = build_overlay_ready_report(document_ir, [160])
 
     assert report["total_candidate_blocks"] == 1
+    assert report["total_excluded_blocks"] == 1
     assert report["pages"][0]["candidates"][0]["text"] == "CONTACT OHMIQUE"
+    assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_glossary_backed_diagram_label"
+    assert report["pages"][0]["excluded_blocks"][0]["block_index"] == 2
+    assert report["pages"][0]["excluded_blocks"][0]["exclusion_reason"] == "excluded_as_untranslated_diagram_label"
     assert translate_scientific_label("CONTACT OHMIQUE") == "OHMIC CONTACT"
     assert translate_scientific_label("Semiconducteur") == "Semiconductor"
     assert translate_scientific_label("Tension d'avalanche") == "Breakdown voltage"
     assert translate_scientific_label("Si type P") == "P-type Si"
     assert translate_scientific_label("Homojonction") == "Homojunction"
+
+
+def test_build_overlay_ready_report_explains_admin_exclusions() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "billing_metadata",
+                        "bbox": {"x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                        "text": "Facture n° 2026-001",
+                        "lines": [{"text": "Facture n° 2026-001", "bbox": {"x0": 10, "y0": 10, "x1": 80, "y1": 20}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "sensitive_metadata",
+                        "bbox": {"x0": 10, "y0": 30, "x1": 80, "y1": 40},
+                        "text": "n° client : C-778899",
+                        "lines": [{"text": "n° client : C-778899", "bbox": {"x0": 10, "y0": 30, "x1": 80, "y1": 40}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "numeric_value",
+                        "bbox": {"x0": 10, "y0": 50, "x1": 80, "y1": 60},
+                        "text": "31,99 EUR",
+                        "lines": [{"text": "31,99 EUR", "bbox": {"x0": 10, "y0": 50, "x1": 80, "y1": 60}}],
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "content",
+                        "bbox": {"x0": 10, "y0": 70, "x1": 160, "y1": 80},
+                        "text": "Abonnement mensuel fibre optique",
+                        "lines": [{"text": "Abonnement mensuel fibre optique", "bbox": {"x0": 10, "y0": 70, "x1": 160, "y1": 80}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["total_candidate_blocks"] == 1
+    assert report["total_excluded_blocks"] == 3
+    assert report["selection_reason_summary"] == {"selected_as_content": 1}
+    assert report["exclusion_reason_summary"] == {
+        "excluded_as_billing_metadata": 1,
+        "excluded_as_numeric_value": 1,
+        "excluded_as_sensitive_metadata": 1,
+    }
+    assert [
+        item["exclusion_reason"]
+        for item in report["pages"][0]["excluded_blocks"]
+    ] == [
+        "excluded_as_billing_metadata",
+        "excluded_as_sensitive_metadata",
+        "excluded_as_numeric_value",
+    ]
+
+
+def test_build_overlay_ready_report_explains_structural_selection_reasons() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "title",
+                        "bbox": {"x0": 10, "y0": 10, "x1": 180, "y1": 30},
+                        "text": "Recette experimentale",
+                        "lines": [{"text": "Recette experimentale", "bbox": {"x0": 10, "y0": 10, "x1": 180, "y1": 30}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "section_step",
+                        "bbox": {"x0": 10, "y0": 40, "x1": 90, "y1": 60},
+                        "text": "Étape 1",
+                        "lines": [{"text": "Étape 1", "bbox": {"x0": 10, "y0": 40, "x1": 90, "y1": 60}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "short_label",
+                        "bbox": {"x0": 10, "y0": 70, "x1": 100, "y1": 90},
+                        "text": "Préparer",
+                        "lines": [{"text": "Préparer", "bbox": {"x0": 10, "y0": 70, "x1": 100, "y1": 90}}],
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "list_item",
+                        "bbox": {"x0": 10, "y0": 100, "x1": 160, "y1": 120},
+                        "text": "1. Mélanger les poudres",
+                        "lines": [{"text": "1. Mélanger les poudres", "bbox": {"x0": 10, "y0": 100, "x1": 160, "y1": 120}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["total_candidate_blocks"] == 4
+    assert report["selection_reason_summary"] == {
+        "selected_as_list_item": 1,
+        "selected_as_section_step": 1,
+        "selected_as_short_label": 1,
+        "selected_as_title": 1,
+    }
+    assert [
+        item["selection_reason"]
+        for item in report["pages"][0]["candidates"]
+    ] == [
+        "selected_as_title",
+        "selected_as_section_step",
+        "selected_as_short_label",
+        "selected_as_list_item",
+    ]
 
 
 def test_glossary_supports_page_120_pedagogical_lines() -> None:

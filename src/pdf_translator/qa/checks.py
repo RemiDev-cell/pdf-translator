@@ -29,6 +29,12 @@ CURRENCY_VALUE_RE = re.compile(r"^[+\-]?\d[\d\s,.]*(?:€|eur|%)?$", re.IGNORECA
 SHORT_DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
 POSTAL_ADDRESS_RE = re.compile(r"\b\d{5}\s+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ\s-]{2,}\b")
 CAPTION_RE = re.compile(r"^(?:fig(?:ure)?\.?|tableau|table)\s*\d+\s*[:.-]", re.IGNORECASE)
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-•*]\s+|\d{1,2}[.)]\s+)")
+QUANTITY_LIST_ITEM_RE = re.compile(
+    r"^\s*\d+(?:[,.]\d+)?\s*(?:g|kg|mg|l|ml|cl|v|a|ma|ua|µa|k|%|[A-Za-zÀ-ÖØ-öø-ÿ]{2,})\b",
+    re.IGNORECASE,
+)
+SECTION_STEP_RE = re.compile(r"^\s*(?:étape|etape|step|phase|partie|section)\s+\d+\b", re.IGNORECASE)
 
 
 def _vertical_overlap_ratio(bbox_a: dict[str, Any], bbox_b: dict[str, Any]) -> float:
@@ -118,11 +124,57 @@ def normalize_block_text(text: str) -> str:
     return normalized
 
 
+def _block_font_sizes(block: dict[str, Any]) -> list[float]:
+    return [
+        float(span["size"])
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+        if span.get("size") is not None
+    ]
+
+
+def _page_font_sizes(page: dict[str, Any]) -> list[float]:
+    return [
+        size
+        for block in page.get("text_blocks", [])
+        for size in _block_font_sizes(block)
+    ]
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _block_is_bold(block: dict[str, Any]) -> bool:
+    return any(
+        int(span.get("flags") or 0) & 16
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+    )
+
+
+def _looks_like_list_item(text: str) -> bool:
+    stripped = text.strip()
+    if LIST_ITEM_RE.match(stripped):
+        return True
+    if len(stripped) <= 80 and QUANTITY_LIST_ITEM_RE.match(stripped) and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", stripped):
+        return True
+    return False
+
+
 def infer_block_role(
     block: dict[str, Any],
     normalized_text: str,
     repeat_count: int,
     page_height: float,
+    page_median_font_size: float = 0.0,
+    page_max_font_size: float = 0.0,
 ) -> str:
     text = block.get("text", "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -131,6 +183,9 @@ def infer_block_role(
     y1 = float(bbox.get("y1", 0))
     compact_text = text.replace("\n", "").replace(" ", "")
     lowercase_text = text.lower()
+    block_font_sizes = _block_font_sizes(block)
+    block_max_font_size = max(block_font_sizes, default=0.0)
+    is_bold = _block_is_bold(block)
 
     if re.fullmatch(r"\d+", text) or re.fullmatch(r"page\s*:\s*\d+\s*/\s*\d+", lowercase_text):
         return "page_number"
@@ -213,6 +268,29 @@ def infer_block_role(
     if text in {"-", "–", "—"}:
         return "ornament"
 
+    if SECTION_STEP_RE.match(text):
+        return "section_step"
+
+    if _looks_like_list_item(text):
+        return "list_item"
+
+    if (
+        page_median_font_size > 0
+        and (
+            block_max_font_size >= page_median_font_size * 1.7
+            or (
+                y0 < page_height * 0.25
+                and block_max_font_size >= page_median_font_size * 1.15
+                and (page_max_font_size <= 0 or block_max_font_size >= page_max_font_size * 0.9)
+            )
+        )
+        and len(text) >= 8
+        and len(lines) <= 2
+        and y0 < page_height * 0.45
+        and "@" not in text
+    ):
+        return "title"
+
     if uppercase_words and len(text) <= 24:
         if len(uppercase_words) >= 1 and re.fullmatch(r"[A-ZÀ-ÖØ-Þ0-9\s|+\-_/]+", text):
             return "diagram_label"
@@ -231,6 +309,16 @@ def infer_block_role(
 
     if "\uf06e" in text:
         return "diagram_label"
+
+    if (
+        page_median_font_size > 0
+        and len(lines) == 1
+        and 3 <= len(text) <= 60
+        and (is_bold or block_max_font_size >= page_median_font_size * 1.25)
+        and not re.search(r"[.!?;:]$", text)
+        and "@" not in text
+    ):
+        return "short_label"
 
     if repeat_count >= 20 and len(normalized_text) < 80:
         return "repeated_chrome"
@@ -294,6 +382,9 @@ def annotate_repeated_blocks(document_ir: dict[str, Any]) -> dict[str, Any]:
 
     for page in document_ir.get("pages", []):
         page_height = float(page.get("height", 0))
+        page_font_sizes = _page_font_sizes(page)
+        page_median_font_size = _median(page_font_sizes)
+        page_max_font_size = max(page_font_sizes, default=0.0)
         for block in page.get("text_blocks", []):
             normalized_text = normalize_block_text(block.get("text", ""))
             repeat_count = counts[normalized_text]
@@ -303,6 +394,8 @@ def annotate_repeated_blocks(document_ir: dict[str, Any]) -> dict[str, Any]:
                 normalized_text=normalized_text,
                 repeat_count=repeat_count,
                 page_height=page_height,
+                page_median_font_size=page_median_font_size,
+                page_max_font_size=page_max_font_size,
             )
         _mark_table_runs(page)
 
@@ -444,6 +537,51 @@ def write_audit_report(
     return json_path, text_path
 
 
+def _overlay_selection_reason(role: str) -> str:
+    return {
+        "content": "selected_as_content",
+        "slide_title": "selected_as_title",
+        "title": "selected_as_title",
+        "section_step": "selected_as_section_step",
+        "short_label": "selected_as_short_label",
+        "list_item": "selected_as_list_item",
+        "caption": "selected_as_caption",
+        "table_header": "selected_as_table_header",
+        "table_cell": "selected_as_table_cell",
+        "diagram_label": "selected_as_glossary_backed_diagram_label",
+    }.get(role, "selected_as_translatable_role")
+
+
+def _overlay_exclusion_reason(role: str) -> str:
+    return {
+        "billing_metadata": "excluded_as_billing_metadata",
+        "diagram_label": "excluded_as_untranslated_diagram_label",
+        "diagram_token": "excluded_as_diagram_token",
+        "footer": "excluded_as_footer",
+        "header": "excluded_as_header",
+        "legal_footer": "excluded_as_legal_footer",
+        "numeric_value": "excluded_as_numeric_value",
+        "ornament": "excluded_as_ornament",
+        "page_number": "excluded_as_page_number",
+        "repeated_chrome": "excluded_as_repeated_chrome",
+        "sensitive_metadata": "excluded_as_sensitive_metadata",
+        "support_metadata": "excluded_as_support_metadata",
+    }.get(role, "excluded_as_non_translatable_role")
+
+
+def _make_overlay_exclusion(block: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+    lines = block.get("lines", [])
+    role = block.get("role", "content")
+    return {
+        "block_index": block.get("block_index"),
+        "role": role,
+        "bbox": block.get("bbox", {}),
+        "text": block.get("text", ""),
+        "line_count": len(lines),
+        "exclusion_reason": reason or _overlay_exclusion_reason(role),
+    }
+
+
 def build_overlay_ready_report(
     document_ir: dict[str, Any],
     selected_pages: list[int],
@@ -451,6 +589,10 @@ def build_overlay_ready_report(
     candidate_roles = {
         "content",
         "slide_title",
+        "title",
+        "section_step",
+        "short_label",
+        "list_item",
         "caption",
         "table_cell",
         "table_header",
@@ -465,19 +607,27 @@ def build_overlay_ready_report(
     page_reports: list[dict[str, Any]] = []
     total_candidate_blocks = 0
     total_candidate_lines = 0
+    total_excluded_blocks = 0
+    overall_selection_reasons: Counter[str] = Counter()
+    overall_exclusion_reasons: Counter[str] = Counter()
 
     for page in pages:
         candidates: list[dict[str, Any]] = []
+        excluded_blocks: list[dict[str, Any]] = []
         blocks = page.get("text_blocks", [])
         index = 0
 
         while index < len(blocks):
             block = blocks[index]
             if block.get("role") not in candidate_roles:
+                excluded_blocks.append(_make_overlay_exclusion(block))
                 index += 1
                 continue
 
             if block.get("role") == "diagram_label" and translate_scientific_label(block.get("text", "")) is None:
+                excluded_blocks.append(
+                    _make_overlay_exclusion(block, "excluded_as_untranslated_diagram_label")
+                )
                 index += 1
                 continue
 
@@ -488,6 +638,11 @@ def build_overlay_ready_report(
                     title_blocks.append(blocks[lookahead])
                     lookahead += 1
                 candidate = _merge_text_blocks(title_blocks)
+                candidate["selection_reason"] = _overlay_selection_reason("slide_title")
+                candidate["merged_block_indices"] = [
+                    item.get("block_index")
+                    for item in title_blocks
+                ]
                 index = lookahead
             else:
                 lines = [
@@ -506,6 +661,7 @@ def build_overlay_ready_report(
                     "text": block.get("text", ""),
                     "line_count": len(lines),
                     "lines": lines,
+                    "selection_reason": _overlay_selection_reason(block.get("role", "content")),
                 }
                 index += 1
 
@@ -513,13 +669,28 @@ def build_overlay_ready_report(
 
         total_candidate_blocks += len(candidates)
         total_candidate_lines += sum(item["line_count"] for item in candidates)
+        total_excluded_blocks += len(excluded_blocks)
+        selection_reason_summary = Counter(
+            item.get("selection_reason", "selected_as_unknown")
+            for item in candidates
+        )
+        exclusion_reason_summary = Counter(
+            item.get("exclusion_reason", "excluded_as_unknown")
+            for item in excluded_blocks
+        )
+        overall_selection_reasons.update(selection_reason_summary)
+        overall_exclusion_reasons.update(exclusion_reason_summary)
 
         page_reports.append(
             {
                 "page_number": page.get("page_number"),
                 "candidate_block_count": len(candidates),
                 "candidate_line_count": sum(item["line_count"] for item in candidates),
+                "excluded_block_count": len(excluded_blocks),
+                "selection_reason_summary": dict(selection_reason_summary),
+                "exclusion_reason_summary": dict(exclusion_reason_summary),
                 "candidates": candidates,
+                "excluded_blocks": excluded_blocks,
             }
         )
 
@@ -528,6 +699,9 @@ def build_overlay_ready_report(
         "page_count": len(page_reports),
         "total_candidate_blocks": total_candidate_blocks,
         "total_candidate_lines": total_candidate_lines,
+        "total_excluded_blocks": total_excluded_blocks,
+        "selection_reason_summary": dict(overall_selection_reasons),
+        "exclusion_reason_summary": dict(overall_exclusion_reasons),
         "pages": page_reports,
     }
 
@@ -538,17 +712,34 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         f"Overlay-ready pages: {report['page_count']}",
         f"Total candidate blocks: {report['total_candidate_blocks']}",
         f"Total candidate lines: {report['total_candidate_lines']}",
+        f"Total excluded blocks: {report.get('total_excluded_blocks', 0)}",
     ]
+    if report.get("selection_reason_summary"):
+        lines.append(
+            f"Selection reasons: {json.dumps(report['selection_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("exclusion_reason_summary"):
+        lines.append(
+            f"Exclusion reasons: {json.dumps(report['exclusion_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
 
     for page in report.get("pages", []):
         lines.append(
             f"Page {page['page_number']}: candidate_blocks={page['candidate_block_count']} "
-            f"candidate_lines={page['candidate_line_count']}"
+            f"candidate_lines={page['candidate_line_count']} "
+            f"excluded_blocks={page.get('excluded_block_count', 0)}"
         )
         for candidate in page.get("candidates", [])[:3]:
             preview = candidate["text"].replace("\n", " | ").strip()[:180]
             lines.append(
-                f"  block {candidate['block_index']}: lines={candidate['line_count']} text={preview}"
+                f"  block {candidate['block_index']} [{candidate.get('selection_reason', 'selected_as_unknown')}]: "
+                f"lines={candidate['line_count']} text={preview}"
+            )
+        for excluded in page.get("excluded_blocks", [])[:3]:
+            preview = excluded["text"].replace("\n", " | ").strip()[:180]
+            lines.append(
+                f"  excluded block {excluded['block_index']} [{excluded.get('exclusion_reason', 'excluded_as_unknown')}]: "
+                f"lines={excluded.get('line_count', 0)} text={preview}"
             )
 
     return "\n".join(lines)
