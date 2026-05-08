@@ -45,6 +45,21 @@ def _ocr_ignored_reason(width: float, height: float, area_ratio: float) -> str |
     return None
 
 
+def _ignored_image_classification(width: float, height: float, area_ratio: float, reason: str) -> str:
+    if reason == "image_area_below_ocr_threshold":
+        return "illustration_or_figure"
+
+    if reason == "image_aspect_ratio_too_extreme":
+        return "decorative"
+
+    if reason == "image_too_small_for_ocr":
+        if area_ratio < 0.002 or max(width, height) < 16.0:
+            return "decorative"
+        return "too_small_for_ocr"
+
+    return "unknown"
+
+
 def extract_document(pdf_path: str | Path) -> DocumentModel:
     pdf_path = Path(pdf_path)
     doc = fitz.open(pdf_path)
@@ -87,6 +102,12 @@ def extract_document(pdf_path: str | Path) -> DocumentModel:
                             height=height,
                             area_ratio=area_ratio,
                             reason=ignored_reason,
+                            classification=_ignored_image_classification(
+                                width,
+                                height,
+                                area_ratio,
+                                ignored_reason,
+                            ),
                         )
                     )
                     image_block_index += 1

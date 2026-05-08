@@ -45,6 +45,8 @@ def _classify_page_route(page: dict[str, Any]) -> tuple[PageRoute, list[str]]:
 
     if has_native_content and has_ocr_candidates:
         return "native_plus_ocr_candidates", reasons
+    if has_native_content and has_images:
+        return "native_with_decorative_images", reasons
     if has_native_content:
         return "native_only", reasons
     if has_ocr_candidates:
@@ -82,6 +84,11 @@ def build_document_routing_report(
             image.get("reason", "unknown")
             for image in ignored_ocr_images
         )
+        ignored_ocr_image_classification_summary = Counter(
+            image.get("classification")
+            for image in ignored_ocr_images
+            if image.get("classification")
+        )
         image_count = int(page.get("image_count", 0) or 0)
         untracked_ignored_images = max(
             0,
@@ -89,6 +96,7 @@ def build_document_routing_report(
         )
         if untracked_ignored_images:
             ignored_ocr_image_reason_summary["image_not_reported_as_text_dict_block"] += untracked_ignored_images
+            ignored_ocr_image_classification_summary["untracked_image_block"] += untracked_ignored_images
         image_block_count = len(ocr_candidates) + len(ignored_ocr_images) + untracked_ignored_images
         native_text_chars = len(page.get("raw_text", ""))
         route, reasons = _classify_page_route(page)
@@ -112,6 +120,7 @@ def build_document_routing_report(
                 "ocr_candidate_count": len(ocr_candidates),
                 "ignored_ocr_image_count": len(ignored_ocr_images) + untracked_ignored_images,
                 "ignored_ocr_image_reason_summary": dict(ignored_ocr_image_reason_summary),
+                "ignored_ocr_image_classification_summary": dict(ignored_ocr_image_classification_summary),
             }
         )
 
@@ -135,6 +144,7 @@ def routing_report_to_text(report: dict[str, Any]) -> str:
     for page in report.get("pages", []):
         excluded_summary = page.get("excluded_role_summary", {})
         ignored_image_summary = page.get("ignored_ocr_image_reason_summary", {})
+        ignored_image_classification_summary = page.get("ignored_ocr_image_classification_summary", {})
         lines.append(
             f"Page {page['page_number']}: route={page['route']} "
             f"native_text_chars={page.get('native_text_chars', page.get('raw_chars', 0))} "
@@ -147,6 +157,10 @@ def routing_report_to_text(report: dict[str, Any]) -> str:
         if ignored_image_summary:
             lines.append(
                 f"  ignored_ocr_images: {json.dumps(ignored_image_summary, ensure_ascii=False, sort_keys=True)}"
+            )
+        if ignored_image_classification_summary:
+            lines.append(
+                f"  ignored_ocr_image_classes: {json.dumps(ignored_image_classification_summary, ensure_ascii=False, sort_keys=True)}"
             )
         if excluded_summary:
             lines.append(

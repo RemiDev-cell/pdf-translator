@@ -74,6 +74,7 @@ class IgnoredOcrImage(BaseModel):
     height: float
     area_ratio: float = 0.0
     reason: str
+    classification: str = "unknown"
 
 
 class PageModel(BaseModel):

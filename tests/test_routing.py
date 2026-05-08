@@ -112,9 +112,9 @@ def test_build_document_routing_report_ignores_decorative_images_for_ocr_route()
                 "image_count": 3,
                 "ocr_candidates": [],
                 "ignored_ocr_images": [
-                    {"reason": "image_too_small_for_ocr"},
-                    {"reason": "image_too_small_for_ocr"},
-                    {"reason": "image_area_below_ocr_threshold"},
+                    {"reason": "image_too_small_for_ocr", "classification": "decorative"},
+                    {"reason": "image_too_small_for_ocr", "classification": "too_small_for_ocr"},
+                    {"reason": "image_area_below_ocr_threshold", "classification": "illustration_or_figure"},
                 ],
                 "block_count": 1,
                 "text_blocks": [{"role": "content", "text": "Invoice text"}],
@@ -124,13 +124,18 @@ def test_build_document_routing_report_ignores_decorative_images_for_ocr_route()
 
     report = build_document_routing_report(document_ir)
 
-    assert report["route_summary"] == {"native_only": 1}
-    assert report["pages"][0]["route"] == "native_only"
+    assert report["route_summary"] == {"native_with_decorative_images": 1}
+    assert report["pages"][0]["route"] == "native_with_decorative_images"
     assert report["pages"][0]["image_block_count"] == 3
     assert report["pages"][0]["ignored_ocr_image_count"] == 3
     assert report["pages"][0]["ignored_ocr_image_reason_summary"] == {
         "image_area_below_ocr_threshold": 1,
         "image_too_small_for_ocr": 2,
+    }
+    assert report["pages"][0]["ignored_ocr_image_classification_summary"] == {
+        "decorative": 1,
+        "illustration_or_figure": 1,
+        "too_small_for_ocr": 1,
     }
     assert "no_ocr_sized_image_regions" in report["pages"][0]["reasons"]
 
@@ -213,7 +218,7 @@ def test_routing_report_to_text_includes_excluded_role_summary() -> None:
                     "image_count": 1,
                     "ocr_candidates": [],
                     "ignored_ocr_images": [
-                        {"reason": "image_too_small_for_ocr"}
+                        {"reason": "image_too_small_for_ocr", "classification": "decorative"}
                     ],
                     "block_count": 3,
                     "text_blocks": [
@@ -237,7 +242,11 @@ def test_routing_report_to_text_includes_excluded_role_summary() -> None:
     assert report["pages"][0]["ignored_ocr_image_reason_summary"] == {
         "image_too_small_for_ocr": 1,
     }
+    assert report["pages"][0]["ignored_ocr_image_classification_summary"] == {
+        "decorative": 1,
+    }
     assert 'ignored_ocr_images: {"image_too_small_for_ocr": 1}' in text
+    assert 'ignored_ocr_image_classes: {"decorative": 1}' in text
     assert 'excluded_roles: {"legal_footer": 1, "page_number": 1}' in text
 
 

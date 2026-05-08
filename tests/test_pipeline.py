@@ -297,6 +297,9 @@ def test_run_document_preview_routes_hybrid_page_with_decorative_and_text_images
     assert page_report["ignored_ocr_image_reason_summary"] == {
         "image_too_small_for_ocr": 1,
     }
+    assert page_report["ignored_ocr_image_classification_summary"] == {
+        "decorative": 1,
+    }
     assert "has_ocr_candidate_regions" in page_report["reasons"]
     assert "no_ocr_sized_image_regions" not in page_report["reasons"]
 
@@ -370,12 +373,15 @@ def test_run_document_preview_keeps_admin_like_pdf_native_with_decorative_image(
     )
 
     assert result["preview_mode"] == "native_overlay"
-    assert result["routing_report"]["route_summary"] == {"native_only": 1}
+    assert result["routing_report"]["route_summary"] == {"native_with_decorative_images": 1}
 
     page_report = result["routing_report"]["pages"][0]
     assert page_report["ocr_candidate_count"] == 0
     assert page_report["ignored_ocr_image_reason_summary"] == {
         "image_too_small_for_ocr": 1,
+    }
+    assert page_report["ignored_ocr_image_classification_summary"] == {
+        "decorative": 1,
     }
     assert page_report["excluded_role_summary"] == {
         "billing_metadata": 2,
