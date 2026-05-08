@@ -404,7 +404,9 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["total_candidate_blocks"] == 2
     assert report["total_excluded_blocks"] == 1
     assert report["total_page_zone_review_items"] == 0
+    assert report["total_reading_flow_review_items"] == 0
     assert report["page_zone_review_items"] == []
+    assert report["reading_flow_review_items"] == []
     assert report["selection_reason_summary"] == {
         "selected_as_content": 1,
         "selected_as_title": 1,
@@ -453,6 +455,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     }
     assert report["pages"][0]["reading_flow_summary"] == {"single_column_flow": 2}
     assert report["pages"][0]["reading_flow_flag_summary"] == {}
+    assert report["pages"][0]["reading_flow_review_item_count"] == 0
+    assert report["pages"][0]["reading_flow_review_items"] == []
     assert report["pages"][0]["page_zone_flag_summary"] == {}
     assert report["pages"][0]["page_zone_review_item_count"] == 0
     assert report["pages"][0]["page_zone_review_items"] == []
@@ -510,7 +514,9 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert "candidate_blocks=2" in text
     assert "excluded_blocks=1" in text
     assert "Total page zone review items: 0" in text
+    assert "Total reading flow review items: 0" in text
     assert "page_zone_review_items=0" in text
+    assert "reading_flow_review_items=0" in text
     assert "selected_as_content" in text
     assert "excluded_as_footer" in text
     assert "Reading flow:" in text
@@ -608,15 +614,26 @@ def test_build_overlay_ready_report_classifies_page_zones() -> None:
     }
     assert report["reading_flow_flag_summary"] == {
         "review_candidate_order_moves_up_page": 1,
-        "review_large_vertical_gap_between_candidates": 2,
-        "review_possible_multi_column_flow": 2,
     }
-    assert report["pages"][0]["candidates"][2]["reading_flow"]["flags"] == [
-        "review_large_vertical_gap_between_candidates"
-    ]
+    assert report["total_reading_flow_review_items"] == 1
+    assert report["pages"][0]["reading_flow_review_item_count"] == 1
+    assert report["reading_flow_review_items"][0] == {
+        "page_number": 1,
+        "block_index": 4,
+        "role": "content",
+        "selection_reason": "selected_as_content",
+        "reading_order_index": 3,
+        "classification": "multi_column_candidate",
+        "flags": ["review_candidate_order_moves_up_page"],
+        "vertical_gap_to_previous": 0.0,
+        "x_overlap_with_previous": 0.0,
+        "same_column_as_previous": False,
+        "line_count": 1,
+        "text_preview": "left",
+    }
+    assert report["pages"][0]["candidates"][2]["reading_flow"]["flags"] == []
     assert report["pages"][0]["candidates"][3]["reading_flow"]["flags"] == [
         "review_candidate_order_moves_up_page",
-        "review_possible_multi_column_flow",
     ]
     assert report["pages"][0]["candidates"][4]["reading_flow"]["classification"] == "multi_column_candidate"
     assert report["page_zone_flag_summary"] == {
@@ -677,6 +694,8 @@ def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> N
     report = build_overlay_ready_report(document_ir, [1])
     text = overlay_ready_report_to_text(report)
 
+    assert report["total_reading_flow_review_items"] == 0
+    assert report["reading_flow_review_items"] == []
     assert report["total_page_zone_review_items"] == 1
     assert report["page_zone_flag_summary"] == {
         "review_structural_exclusion_in_body_zone": 1,
@@ -746,6 +765,12 @@ def test_build_overlay_ready_report_classifies_table_and_caption_reading_flow() 
         "floating_label_or_caption": 1,
         "table_like_flow": 2,
     }
+    assert report["reading_flow_flag_summary"] == {
+        "review_large_vertical_gap_between_candidates": 1,
+    }
+    assert report["total_reading_flow_review_items"] == 1
+    assert report["reading_flow_review_items"][0]["block_index"] == 3
+    assert report["reading_flow_review_items"][0]["classification"] == "floating_label_or_caption"
     assert [
         candidate["reading_flow"]["classification"]
         for candidate in report["pages"][0]["candidates"]

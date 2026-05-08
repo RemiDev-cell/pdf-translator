@@ -286,14 +286,15 @@ def _candidate_page_zone_flags(item: dict[str, Any]) -> list[str]:
     vertical = page_zone.get("vertical")
     horizontal = page_zone.get("horizontal")
     role = item.get("role")
-    content_like_roles = {"content", "list_item", "caption", "table_cell", "table_header", "diagram_label"}
+    vertical_review_roles = {"content", "list_item", "caption", "table_cell", "table_header", "diagram_label"}
+    margin_review_roles = {"content", "caption", "diagram_label"}
 
     flags: list[str] = []
-    if role in content_like_roles and vertical == "header_zone":
+    if role in vertical_review_roles and vertical == "header_zone":
         flags.append("review_candidate_content_role_in_header_zone")
-    if role in content_like_roles and vertical == "footer_zone":
+    if role in vertical_review_roles and vertical == "footer_zone":
         flags.append("review_candidate_content_role_in_footer_zone")
-    if role in content_like_roles and horizontal in {"left_margin", "right_margin"}:
+    if role in margin_review_roles and horizontal in {"left_margin", "right_margin"}:
         flags.append("review_candidate_content_role_in_margin")
 
     return flags
@@ -440,12 +441,11 @@ def _reading_flow_flags(
     flags: list[str] = []
     current_bbox = candidate.get("bbox", {})
     previous_bbox = previous.get("bbox", {})
-    if float(current_bbox.get("y0", 0)) + 2.0 < float(previous_bbox.get("y0", 0)):
+    upward_delta = float(previous_bbox.get("y0", 0)) - float(current_bbox.get("y0", 0))
+    if upward_delta > max(48.0, page_height * 0.10):
         flags.append("review_candidate_order_moves_up_page")
-    if previous_gap["vertical_gap"] > max(48.0, page_height * 0.20):
+    if previous_gap["vertical_gap"] > max(96.0, page_height * 0.25):
         flags.append("review_large_vertical_gap_between_candidates")
-    if not previous_gap["same_column"] and previous_gap["vertical_gap"] <= max(24.0, page_height * 0.08):
-        flags.append("review_possible_multi_column_flow")
 
     return flags
 
@@ -479,6 +479,44 @@ def _annotate_reading_flow(
         flag_summary.update(flags)
 
     return classification_summary, flag_summary
+
+
+def _reading_flow_review_item(
+    candidate: dict[str, Any],
+    page_number: int | None,
+) -> dict[str, Any] | None:
+    reading_flow = candidate.get("reading_flow", {})
+    flags = reading_flow.get("flags", [])
+    if not flags:
+        return None
+
+    return {
+        "page_number": page_number,
+        "block_index": candidate.get("block_index"),
+        "role": candidate.get("role"),
+        "selection_reason": candidate.get("selection_reason", "selected_as_unknown"),
+        "reading_order_index": reading_flow.get("reading_order_index"),
+        "classification": reading_flow.get("classification", "unknown_flow"),
+        "flags": flags,
+        "vertical_gap_to_previous": reading_flow.get("vertical_gap_to_previous"),
+        "x_overlap_with_previous": reading_flow.get("x_overlap_with_previous"),
+        "same_column_as_previous": reading_flow.get("same_column_as_previous"),
+        "line_count": candidate.get("line_count", 0),
+        "text_preview": candidate.get("text", "").replace("\n", " | ").strip()[:120],
+    }
+
+
+def _reading_flow_review_items(
+    candidates: list[dict[str, Any]],
+    page_number: int | None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for candidate in candidates:
+        review_item = _reading_flow_review_item(candidate, page_number)
+        if review_item is not None:
+            items.append(review_item)
+
+    return items
 
 
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
@@ -972,6 +1010,7 @@ def build_overlay_ready_report(
 
     page_reports: list[dict[str, Any]] = []
     overall_page_zone_review_items: list[dict[str, Any]] = []
+    overall_reading_flow_review_items: list[dict[str, Any]] = []
     total_candidate_blocks = 0
     total_candidate_lines = 0
     total_excluded_blocks = 0
@@ -1072,12 +1111,17 @@ def build_overlay_ready_report(
             candidates.append(candidate)
 
         reading_flow_summary, reading_flow_flag_summary = _annotate_reading_flow(candidates, page_height)
+        reading_flow_review_items = _reading_flow_review_items(
+            candidates,
+            page.get("page_number"),
+        )
         page_zone_flag_summary = _annotate_page_zone_flags(candidates, excluded_blocks)
         page_zone_review_items = _page_zone_review_items(
             candidates,
             excluded_blocks,
             page.get("page_number"),
         )
+        overall_reading_flow_review_items.extend(reading_flow_review_items)
         overall_page_zone_review_items.extend(page_zone_review_items)
         total_candidate_blocks += len(candidates)
         total_candidate_lines += sum(item["line_count"] for item in candidates)
@@ -1126,6 +1170,8 @@ def build_overlay_ready_report(
                 "exclusion_reason_summary": dict(exclusion_reason_summary),
                 "reading_flow_summary": dict(reading_flow_summary),
                 "reading_flow_flag_summary": dict(reading_flow_flag_summary),
+                "reading_flow_review_item_count": len(reading_flow_review_items),
+                "reading_flow_review_items": reading_flow_review_items,
                 "page_zone_flag_summary": dict(page_zone_flag_summary),
                 "page_zone_review_item_count": len(page_zone_review_items),
                 "page_zone_review_items": page_zone_review_items,
@@ -1145,10 +1191,12 @@ def build_overlay_ready_report(
         "total_candidate_lines": total_candidate_lines,
         "total_excluded_blocks": total_excluded_blocks,
         "total_page_zone_review_items": len(overall_page_zone_review_items),
+        "total_reading_flow_review_items": len(overall_reading_flow_review_items),
         "selection_reason_summary": dict(overall_selection_reasons),
         "exclusion_reason_summary": dict(overall_exclusion_reasons),
         "reading_flow_summary": dict(overall_reading_flow_classifications),
         "reading_flow_flag_summary": dict(overall_reading_flow_flags),
+        "reading_flow_review_items": overall_reading_flow_review_items,
         "page_zone_flag_summary": dict(overall_page_zone_flags),
         "page_zone_review_items": overall_page_zone_review_items,
         "candidate_page_zone_summary": {
@@ -1177,6 +1225,7 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         f"Total candidate lines: {report['total_candidate_lines']}",
         f"Total excluded blocks: {report.get('total_excluded_blocks', 0)}",
         f"Total page zone review items: {report.get('total_page_zone_review_items', 0)}",
+        f"Total reading flow review items: {report.get('total_reading_flow_review_items', 0)}",
     ]
     if report.get("selection_reason_summary"):
         lines.append(
@@ -1220,7 +1269,8 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             f"Page {page['page_number']}: candidate_blocks={page['candidate_block_count']} "
             f"candidate_lines={page['candidate_line_count']} "
             f"excluded_blocks={page.get('excluded_block_count', 0)} "
-            f"page_zone_review_items={page.get('page_zone_review_item_count', 0)}"
+            f"page_zone_review_items={page.get('page_zone_review_item_count', 0)} "
+            f"reading_flow_review_items={page.get('reading_flow_review_item_count', 0)}"
         )
         if page.get("candidate_page_zone_summary"):
             lines.append(
@@ -1241,6 +1291,14 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         if page.get("reading_flow_flag_summary"):
             lines.append(
                 f"  reading flow flags: {json.dumps(page['reading_flow_flag_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        for review_item in page.get("reading_flow_review_items", [])[:5]:
+            preview = review_item.get("text_preview", "")
+            flags = ",".join(review_item.get("flags", [])) or "none"
+            lines.append(
+                f"  reading review block {review_item.get('block_index')}: "
+                f"flow={review_item.get('classification', 'unknown_flow')} "
+                f"flags={flags} text={preview}"
             )
         if page.get("candidate_page_zone_role_summary"):
             lines.append(
