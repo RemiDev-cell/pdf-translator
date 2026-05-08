@@ -168,6 +168,59 @@ def _looks_like_list_item(text: str) -> bool:
     return False
 
 
+def _bbox_metrics(bbox: dict[str, Any], page_width: float, page_height: float) -> dict[str, float]:
+    x0 = float(bbox.get("x0", 0.0) or 0.0)
+    y0 = float(bbox.get("y0", 0.0) or 0.0)
+    x1 = float(bbox.get("x1", 0.0) or 0.0)
+    y1 = float(bbox.get("y1", 0.0) or 0.0)
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
+    page_area = max(1.0, page_width * page_height)
+
+    return {
+        "width": width,
+        "height": height,
+        "area_ratio": (width * height) / page_area,
+        "x_center": x0 + (width / 2),
+        "y_center": y0 + (height / 2),
+    }
+
+
+def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
+    sizes = [
+        float(span["size"])
+        for line in lines
+        for span in line.get("spans", [])
+        if span.get("size") is not None
+    ]
+    if not sizes:
+        return {
+            "min": None,
+            "max": None,
+            "median": None,
+            "span_count": 0,
+        }
+
+    return {
+        "min": min(sizes),
+        "max": max(sizes),
+        "median": _median(sizes),
+        "span_count": len(sizes),
+    }
+
+
+def _overlay_geometry(
+    bbox: dict[str, Any],
+    lines: list[dict[str, Any]],
+    page_width: float,
+    page_height: float,
+) -> dict[str, Any]:
+    return {
+        **_bbox_metrics(bbox, page_width, page_height),
+        "font_size_summary": _font_size_summary(lines),
+    }
+
+
 def infer_block_role(
     block: dict[str, Any],
     normalized_text: str,
@@ -569,8 +622,24 @@ def _overlay_exclusion_reason(role: str) -> str:
     }.get(role, "excluded_as_non_translatable_role")
 
 
-def _make_overlay_exclusion(block: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
-    lines = block.get("lines", [])
+def _overlay_lines(block: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "text": line.get("text", ""),
+            "bbox": line.get("bbox", {}),
+            "spans": line.get("spans", []),
+        }
+        for line in block.get("lines", [])
+    ]
+
+
+def _make_overlay_exclusion(
+    block: dict[str, Any],
+    page_width: float,
+    page_height: float,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    lines = _overlay_lines(block)
     role = block.get("role", "content")
     return {
         "block_index": block.get("block_index"),
@@ -578,6 +647,7 @@ def _make_overlay_exclusion(block: dict[str, Any], reason: str | None = None) ->
         "bbox": block.get("bbox", {}),
         "text": block.get("text", ""),
         "line_count": len(lines),
+        "geometry": _overlay_geometry(block.get("bbox", {}), lines, page_width, page_height),
         "exclusion_reason": reason or _overlay_exclusion_reason(role),
     }
 
@@ -615,18 +685,25 @@ def build_overlay_ready_report(
         candidates: list[dict[str, Any]] = []
         excluded_blocks: list[dict[str, Any]] = []
         blocks = page.get("text_blocks", [])
+        page_width = float(page.get("width", 0.0) or 0.0)
+        page_height = float(page.get("height", 0.0) or 0.0)
         index = 0
 
         while index < len(blocks):
             block = blocks[index]
             if block.get("role") not in candidate_roles:
-                excluded_blocks.append(_make_overlay_exclusion(block))
+                excluded_blocks.append(_make_overlay_exclusion(block, page_width, page_height))
                 index += 1
                 continue
 
             if block.get("role") == "diagram_label" and translate_scientific_label(block.get("text", "")) is None:
                 excluded_blocks.append(
-                    _make_overlay_exclusion(block, "excluded_as_untranslated_diagram_label")
+                    _make_overlay_exclusion(
+                        block,
+                        page_width,
+                        page_height,
+                        "excluded_as_untranslated_diagram_label",
+                    )
                 )
                 index += 1
                 continue
@@ -643,16 +720,15 @@ def build_overlay_ready_report(
                     item.get("block_index")
                     for item in title_blocks
                 ]
+                candidate["geometry"] = _overlay_geometry(
+                    candidate.get("bbox", {}),
+                    candidate.get("lines", []),
+                    page_width,
+                    page_height,
+                )
                 index = lookahead
             else:
-                lines = [
-                    {
-                        "text": line.get("text", ""),
-                        "bbox": line.get("bbox", {}),
-                        "spans": line.get("spans", []),
-                    }
-                    for line in block.get("lines", [])
-                ]
+                lines = _overlay_lines(block)
 
                 candidate = {
                     "block_index": block.get("block_index"),
@@ -661,6 +737,12 @@ def build_overlay_ready_report(
                     "text": block.get("text", ""),
                     "line_count": len(lines),
                     "lines": lines,
+                    "geometry": _overlay_geometry(
+                        block.get("bbox", {}),
+                        lines,
+                        page_width,
+                        page_height,
+                    ),
                     "selection_reason": _overlay_selection_reason(block.get("role", "content")),
                 }
                 index += 1

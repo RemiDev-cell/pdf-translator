@@ -354,21 +354,33 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
         "pages": [
             {
                 "page_number": 10,
+                "width": 100,
+                "height": 200,
                 "text_blocks": [
                     {
                         "block_index": 0,
                         "role": "footer",
                         "bbox": {"x0": 0, "y0": 1, "x1": 2, "y1": 3},
                         "text": "footer text",
-                        "lines": [],
+                        "lines": [
+                            {
+                                "text": "footer text",
+                                "bbox": {"x0": 0, "y0": 1, "x1": 2, "y1": 3},
+                                "spans": [{"text": "footer text", "size": 7}],
+                            }
+                        ],
                     },
                     {
                         "block_index": 1,
                         "role": "content",
-                        "bbox": {"x0": 10, "y0": 11, "x1": 12, "y1": 13},
+                        "bbox": {"x0": 10, "y0": 20, "x1": 60, "y1": 50},
                         "text": "useful text",
                         "lines": [
-                            {"text": "useful text", "bbox": {"x0": 10, "y0": 11, "x1": 12, "y1": 13}}
+                            {
+                                "text": "useful text",
+                                "bbox": {"x0": 10, "y0": 20, "x1": 60, "y1": 50},
+                                "spans": [{"text": "useful", "size": 10}, {"text": " text", "size": 12}],
+                            }
                         ],
                     },
                     {
@@ -398,10 +410,30 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
+    assert report["pages"][0]["candidates"][0]["geometry"] == {
+        "width": 50.0,
+        "height": 30.0,
+        "area_ratio": 0.075,
+        "x_center": 35.0,
+        "y_center": 35.0,
+        "font_size_summary": {
+            "min": 10.0,
+            "max": 12.0,
+            "median": 11.0,
+            "span_count": 2,
+        },
+    }
     assert report["pages"][0]["candidates"][1]["block_index"] == 2
     assert report["pages"][0]["candidates"][1]["selection_reason"] == "selected_as_title"
     assert report["pages"][0]["excluded_blocks"][0]["block_index"] == 0
     assert report["pages"][0]["excluded_blocks"][0]["exclusion_reason"] == "excluded_as_footer"
+    assert report["pages"][0]["excluded_blocks"][0]["geometry"]["width"] == 2.0
+    assert report["pages"][0]["excluded_blocks"][0]["geometry"]["font_size_summary"] == {
+        "min": 7.0,
+        "max": 7.0,
+        "median": 7.0,
+        "span_count": 1,
+    }
     assert "candidate_blocks=2" in text
     assert "excluded_blocks=1" in text
     assert "selected_as_content" in text
@@ -415,6 +447,8 @@ def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
         "pages": [
             {
                 "page_number": 10,
+                "width": 400,
+                "height": 200,
                 "text_blocks": [
                     {
                         "block_index": 3,
@@ -447,6 +481,8 @@ def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
     assert report["total_candidate_blocks"] == 1
     assert report["pages"][0]["candidates"][0]["text"] == "MAIN TITLE - 2"
     assert report["pages"][0]["candidates"][0]["bbox"] == {"x0": 100.0, "y0": 10.0, "x1": 320.0, "y1": 30.0}
+    assert report["pages"][0]["candidates"][0]["geometry"]["width"] == 220.0
+    assert report["pages"][0]["candidates"][0]["geometry"]["x_center"] == 210.0
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_title"
     assert report["pages"][0]["candidates"][0]["merged_block_indices"] == [3, 4, 5]
     assert report["total_excluded_blocks"] == 0
