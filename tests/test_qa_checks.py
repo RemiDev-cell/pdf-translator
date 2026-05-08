@@ -410,6 +410,10 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
+    assert report["pages"][0]["candidates"][0]["page_zone"] == {
+        "vertical": "body_zone",
+        "horizontal": "center_band",
+    }
     assert report["pages"][0]["candidates"][0]["geometry"] == {
         "width": 50.0,
         "height": 30.0,
@@ -427,6 +431,10 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["pages"][0]["candidates"][1]["selection_reason"] == "selected_as_title"
     assert report["pages"][0]["excluded_blocks"][0]["block_index"] == 0
     assert report["pages"][0]["excluded_blocks"][0]["exclusion_reason"] == "excluded_as_footer"
+    assert report["pages"][0]["excluded_blocks"][0]["page_zone"] == {
+        "vertical": "header_zone",
+        "horizontal": "left_margin",
+    }
     assert report["pages"][0]["excluded_blocks"][0]["geometry"]["width"] == 2.0
     assert report["pages"][0]["excluded_blocks"][0]["geometry"]["font_size_summary"] == {
         "min": 7.0,
@@ -440,6 +448,67 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert "excluded_as_footer" in text
     assert json_path.exists()
     assert text_path.exists()
+
+
+def test_build_overlay_ready_report_classifies_page_zones() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 10, "x1": 60, "y1": 20},
+                        "text": "top",
+                        "lines": [{"text": "top", "bbox": {"x0": 40, "y0": 10, "x1": 60, "y1": 20}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 80, "x1": 60, "y1": 100},
+                        "text": "middle",
+                        "lines": [{"text": "middle", "bbox": {"x0": 40, "y0": 80, "x1": 60, "y1": 100}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 180, "x1": 60, "y1": 190},
+                        "text": "bottom",
+                        "lines": [{"text": "bottom", "bbox": {"x0": 40, "y0": 180, "x1": 60, "y1": 190}}],
+                    },
+                    {
+                        "block_index": 4,
+                        "role": "content",
+                        "bbox": {"x0": 0, "y0": 80, "x1": 10, "y1": 100},
+                        "text": "left",
+                        "lines": [{"text": "left", "bbox": {"x0": 0, "y0": 80, "x1": 10, "y1": 100}}],
+                    },
+                    {
+                        "block_index": 5,
+                        "role": "content",
+                        "bbox": {"x0": 90, "y0": 80, "x1": 100, "y1": 100},
+                        "text": "right",
+                        "lines": [{"text": "right", "bbox": {"x0": 90, "y0": 80, "x1": 100, "y1": 100}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    zones = {
+        item["block_index"]: item["page_zone"]
+        for item in report["pages"][0]["candidates"]
+    }
+
+    assert zones[1] == {"vertical": "header_zone", "horizontal": "center_band"}
+    assert zones[2] == {"vertical": "body_zone", "horizontal": "center_band"}
+    assert zones[3] == {"vertical": "footer_zone", "horizontal": "center_band"}
+    assert zones[4] == {"vertical": "body_zone", "horizontal": "left_margin"}
+    assert zones[5] == {"vertical": "body_zone", "horizontal": "right_margin"}
 
 
 def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:

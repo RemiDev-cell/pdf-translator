@@ -186,6 +186,37 @@ def _bbox_metrics(bbox: dict[str, Any], page_width: float, page_height: float) -
     }
 
 
+def classify_page_zone(
+    bbox: dict[str, Any],
+    page_width: float,
+    page_height: float,
+) -> dict[str, str]:
+    metrics = _bbox_metrics(bbox, page_width, page_height)
+
+    if page_height <= 0:
+        vertical = "unknown_vertical_zone"
+    elif metrics["y_center"] <= page_height * 0.15:
+        vertical = "header_zone"
+    elif metrics["y_center"] >= page_height * 0.85:
+        vertical = "footer_zone"
+    else:
+        vertical = "body_zone"
+
+    if page_width <= 0:
+        horizontal = "unknown_horizontal_zone"
+    elif metrics["x_center"] <= page_width * 0.20:
+        horizontal = "left_margin"
+    elif metrics["x_center"] >= page_width * 0.80:
+        horizontal = "right_margin"
+    else:
+        horizontal = "center_band"
+
+    return {
+        "vertical": vertical,
+        "horizontal": horizontal,
+    }
+
+
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
     sizes = [
         float(span["size"])
@@ -648,6 +679,7 @@ def _make_overlay_exclusion(
         "text": block.get("text", ""),
         "line_count": len(lines),
         "geometry": _overlay_geometry(block.get("bbox", {}), lines, page_width, page_height),
+        "page_zone": classify_page_zone(block.get("bbox", {}), page_width, page_height),
         "exclusion_reason": reason or _overlay_exclusion_reason(role),
     }
 
@@ -726,6 +758,11 @@ def build_overlay_ready_report(
                     page_width,
                     page_height,
                 )
+                candidate["page_zone"] = classify_page_zone(
+                    candidate.get("bbox", {}),
+                    page_width,
+                    page_height,
+                )
                 index = lookahead
             else:
                 lines = _overlay_lines(block)
@@ -740,6 +777,11 @@ def build_overlay_ready_report(
                     "geometry": _overlay_geometry(
                         block.get("bbox", {}),
                         lines,
+                        page_width,
+                        page_height,
+                    ),
+                    "page_zone": classify_page_zone(
+                        block.get("bbox", {}),
                         page_width,
                         page_height,
                     ),

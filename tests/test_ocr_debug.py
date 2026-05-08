@@ -151,6 +151,7 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
                         "block_index": 2,
                         "role": "content",
                         "line_count": 2,
+                        "page_zone": {"vertical": "body_zone", "horizontal": "center_band"},
                         "text": "Bloc natif principal avec assez de texte pour la revue.",
                     }
                 ],
@@ -185,6 +186,7 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
     assert report['total_native_regions'] == 1
     assert report['total_ocr_regions'] == 1
     assert report['pages'][0]['native_regions'][0]['block_index'] == 2
+    assert 'page_zone' not in report['pages'][0]['native_regions'][0]
     assert report['pages'][0]['ocr_regions'][0]['ocr_backend'] == 'tesseract'
     assert report['pages'][0]['ocr_regions'][0]['text'] == full_ocr_text
     assert 'native B2' in text
