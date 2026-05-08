@@ -34,6 +34,11 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
                         "line_count": 2,
                         "page_zone": {"vertical": "header_zone", "horizontal": "left_margin"},
                         "page_zone_flags": ["review_candidate_content_role_in_margin"],
+                        "reading_flow": {
+                            "reading_order_index": 0,
+                            "classification": "isolated_block",
+                            "flags": [],
+                        },
                         "lines": [
                             {"text": "line 1", "bbox": {"x0": 1, "y0": 2, "x1": 3, "y1": 4}},
                             {"text": "line 2", "bbox": {"x0": 5, "y0": 6, "x1": 7, "y1": 8}},
@@ -67,6 +72,7 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
     assert "page_zone" not in report["pages"][0]["regions"][0]
     assert "page_zone_flags" not in report["pages"][0]["regions"][0]
     assert "page_zone_review_items" not in report["pages"][0]["regions"][0]
+    assert "reading_flow" not in report["pages"][0]["regions"][0]
     assert "Page 10: regions=1" in text
     assert json_path.exists()
     assert text_path.exists()

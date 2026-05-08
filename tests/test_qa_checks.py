@@ -410,6 +410,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
         "selected_as_title": 1,
     }
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
+    assert report["reading_flow_summary"] == {"single_column_flow": 2}
+    assert report["reading_flow_flag_summary"] == {}
     assert report["page_zone_flag_summary"] == {}
     assert report["candidate_page_zone_summary"] == {
         "vertical": {"body_zone": 1, "header_zone": 1},
@@ -449,12 +451,28 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
         "vertical": {"header_zone": {"excluded_as_footer": 1}},
         "horizontal": {"left_margin": {"excluded_as_footer": 1}},
     }
+    assert report["pages"][0]["reading_flow_summary"] == {"single_column_flow": 2}
+    assert report["pages"][0]["reading_flow_flag_summary"] == {}
     assert report["pages"][0]["page_zone_flag_summary"] == {}
     assert report["pages"][0]["page_zone_review_item_count"] == 0
     assert report["pages"][0]["page_zone_review_items"] == []
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
     assert report["pages"][0]["candidates"][0]["page_zone_flags"] == []
+    assert report["pages"][0]["candidates"][0]["reading_flow"] == {
+        "reading_order_index": 0,
+        "previous_candidate_gap": None,
+        "next_candidate_gap": {
+            "vertical_gap": 0.0,
+            "x_overlap": 1.0,
+            "same_column": True,
+        },
+        "same_column_as_previous": None,
+        "x_overlap_with_previous": None,
+        "vertical_gap_to_previous": None,
+        "classification": "single_column_flow",
+        "flags": [],
+    }
     assert report["pages"][0]["candidates"][0]["page_zone"] == {
         "vertical": "body_zone",
         "horizontal": "center_band",
@@ -495,6 +513,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert "page_zone_review_items=0" in text
     assert "selected_as_content" in text
     assert "excluded_as_footer" in text
+    assert "Reading flow:" in text
+    assert "flow=single_column_flow" in text
     assert "Candidate page zones:" in text
     assert "Excluded page zones:" in text
     assert "candidate zones:" in text
@@ -582,6 +602,23 @@ def test_build_overlay_ready_report_classifies_page_zones() -> None:
             "right_margin": {"content": 1},
         },
     }
+    assert report["reading_flow_summary"] == {
+        "multi_column_candidate": 2,
+        "single_column_flow": 3,
+    }
+    assert report["reading_flow_flag_summary"] == {
+        "review_candidate_order_moves_up_page": 1,
+        "review_large_vertical_gap_between_candidates": 2,
+        "review_possible_multi_column_flow": 2,
+    }
+    assert report["pages"][0]["candidates"][2]["reading_flow"]["flags"] == [
+        "review_large_vertical_gap_between_candidates"
+    ]
+    assert report["pages"][0]["candidates"][3]["reading_flow"]["flags"] == [
+        "review_candidate_order_moves_up_page",
+        "review_possible_multi_column_flow",
+    ]
+    assert report["pages"][0]["candidates"][4]["reading_flow"]["classification"] == "multi_column_candidate"
     assert report["page_zone_flag_summary"] == {
         "review_candidate_content_role_in_footer_zone": 1,
         "review_candidate_content_role_in_header_zone": 1,
@@ -667,6 +704,56 @@ def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> N
     assert "page zone flags:" in text
     assert "Total page zone review items: 1" in text
     assert "review excluded block 1" in text
+
+
+def test_build_overlay_ready_report_classifies_table_and_caption_reading_flow() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 300,
+                "height": 300,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "table_header",
+                        "bbox": {"x0": 20, "y0": 40, "x1": 120, "y1": 60},
+                        "text": "Header",
+                        "lines": [{"text": "Header", "bbox": {"x0": 20, "y0": 40, "x1": 120, "y1": 60}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "table_cell",
+                        "bbox": {"x0": 20, "y0": 62, "x1": 120, "y1": 82},
+                        "text": "Cell",
+                        "lines": [{"text": "Cell", "bbox": {"x0": 20, "y0": 62, "x1": 120, "y1": 82}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "caption",
+                        "bbox": {"x0": 20, "y0": 180, "x1": 180, "y1": 200},
+                        "text": "Figure 1: caption",
+                        "lines": [{"text": "Figure 1: caption", "bbox": {"x0": 20, "y0": 180, "x1": 180, "y1": 200}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["reading_flow_summary"] == {
+        "floating_label_or_caption": 1,
+        "table_like_flow": 2,
+    }
+    assert [
+        candidate["reading_flow"]["classification"]
+        for candidate in report["pages"][0]["candidates"]
+    ] == [
+        "table_like_flow",
+        "table_like_flow",
+        "floating_label_or_caption",
+    ]
 
 
 def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:

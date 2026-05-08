@@ -380,6 +380,107 @@ def _page_zone_review_items(
     return items
 
 
+def _horizontal_overlap_ratio(bbox_a: dict[str, Any], bbox_b: dict[str, Any]) -> float:
+    a_x0 = float(bbox_a.get("x0", 0))
+    a_x1 = float(bbox_a.get("x1", 0))
+    b_x0 = float(bbox_b.get("x0", 0))
+    b_x1 = float(bbox_b.get("x1", 0))
+    overlap = max(0.0, min(a_x1, b_x1) - max(a_x0, b_x0))
+    min_width = min(max(0.0, a_x1 - a_x0), max(0.0, b_x1 - b_x0))
+    if min_width <= 0:
+        return 0.0
+    return overlap / min_width
+
+
+def _vertical_gap(previous_bbox: dict[str, Any], current_bbox: dict[str, Any]) -> float:
+    return max(0.0, float(current_bbox.get("y0", 0)) - float(previous_bbox.get("y1", 0)))
+
+
+def _candidate_gap(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any] | None:
+    if previous is None or current is None:
+        return None
+
+    previous_bbox = previous.get("bbox", {})
+    current_bbox = current.get("bbox", {})
+    x_overlap = _horizontal_overlap_ratio(previous_bbox, current_bbox)
+
+    return {
+        "vertical_gap": _vertical_gap(previous_bbox, current_bbox),
+        "x_overlap": x_overlap,
+        "same_column": x_overlap >= 0.5,
+    }
+
+
+def _reading_flow_classification(
+    candidate: dict[str, Any],
+    candidate_count: int,
+    previous_gap: dict[str, Any] | None,
+) -> str:
+    role = candidate.get("role")
+    if candidate_count == 1:
+        return "isolated_block"
+    if role in {"table_header", "table_cell"}:
+        return "table_like_flow"
+    if role in {"caption", "diagram_label"}:
+        return "floating_label_or_caption"
+    if previous_gap is not None and not previous_gap["same_column"]:
+        return "multi_column_candidate"
+    return "single_column_flow"
+
+
+def _reading_flow_flags(
+    candidate: dict[str, Any],
+    previous: dict[str, Any] | None,
+    previous_gap: dict[str, Any] | None,
+    page_height: float,
+) -> list[str]:
+    if previous is None or previous_gap is None:
+        return []
+
+    flags: list[str] = []
+    current_bbox = candidate.get("bbox", {})
+    previous_bbox = previous.get("bbox", {})
+    if float(current_bbox.get("y0", 0)) + 2.0 < float(previous_bbox.get("y0", 0)):
+        flags.append("review_candidate_order_moves_up_page")
+    if previous_gap["vertical_gap"] > max(48.0, page_height * 0.20):
+        flags.append("review_large_vertical_gap_between_candidates")
+    if not previous_gap["same_column"] and previous_gap["vertical_gap"] <= max(24.0, page_height * 0.08):
+        flags.append("review_possible_multi_column_flow")
+
+    return flags
+
+
+def _annotate_reading_flow(
+    candidates: list[dict[str, Any]],
+    page_height: float,
+) -> tuple[Counter[str], Counter[str]]:
+    classification_summary: Counter[str] = Counter()
+    flag_summary: Counter[str] = Counter()
+
+    for index, candidate in enumerate(candidates):
+        previous = candidates[index - 1] if index > 0 else None
+        next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
+        previous_gap = _candidate_gap(previous, candidate)
+        next_gap = _candidate_gap(candidate, next_candidate)
+        classification = _reading_flow_classification(candidate, len(candidates), previous_gap)
+        flags = _reading_flow_flags(candidate, previous, previous_gap, page_height)
+
+        candidate["reading_flow"] = {
+            "reading_order_index": index,
+            "previous_candidate_gap": previous_gap,
+            "next_candidate_gap": next_gap,
+            "same_column_as_previous": None if previous_gap is None else previous_gap["same_column"],
+            "x_overlap_with_previous": None if previous_gap is None else previous_gap["x_overlap"],
+            "vertical_gap_to_previous": None if previous_gap is None else previous_gap["vertical_gap"],
+            "classification": classification,
+            "flags": flags,
+        }
+        classification_summary.update([classification])
+        flag_summary.update(flags)
+
+    return classification_summary, flag_summary
+
+
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
     sizes = [
         float(span["size"])
@@ -877,6 +978,8 @@ def build_overlay_ready_report(
     overall_selection_reasons: Counter[str] = Counter()
     overall_exclusion_reasons: Counter[str] = Counter()
     overall_page_zone_flags: Counter[str] = Counter()
+    overall_reading_flow_classifications: Counter[str] = Counter()
+    overall_reading_flow_flags: Counter[str] = Counter()
     overall_candidate_vertical_zones: Counter[str] = Counter()
     overall_candidate_horizontal_zones: Counter[str] = Counter()
     overall_excluded_vertical_zones: Counter[str] = Counter()
@@ -968,6 +1071,7 @@ def build_overlay_ready_report(
 
             candidates.append(candidate)
 
+        reading_flow_summary, reading_flow_flag_summary = _annotate_reading_flow(candidates, page_height)
         page_zone_flag_summary = _annotate_page_zone_flags(candidates, excluded_blocks)
         page_zone_review_items = _page_zone_review_items(
             candidates,
@@ -1001,6 +1105,8 @@ def build_overlay_ready_report(
         overall_excluded_vertical_zones.update(excluded_page_zone_summary["vertical"])
         overall_excluded_horizontal_zones.update(excluded_page_zone_summary["horizontal"])
         overall_page_zone_flags.update(page_zone_flag_summary)
+        overall_reading_flow_classifications.update(reading_flow_summary)
+        overall_reading_flow_flags.update(reading_flow_flag_summary)
         _merge_page_zone_field_summary(
             overall_candidate_page_zone_role_summary,
             candidate_page_zone_role_summary,
@@ -1018,6 +1124,8 @@ def build_overlay_ready_report(
                 "excluded_block_count": len(excluded_blocks),
                 "selection_reason_summary": dict(selection_reason_summary),
                 "exclusion_reason_summary": dict(exclusion_reason_summary),
+                "reading_flow_summary": dict(reading_flow_summary),
+                "reading_flow_flag_summary": dict(reading_flow_flag_summary),
                 "page_zone_flag_summary": dict(page_zone_flag_summary),
                 "page_zone_review_item_count": len(page_zone_review_items),
                 "page_zone_review_items": page_zone_review_items,
@@ -1039,6 +1147,8 @@ def build_overlay_ready_report(
         "total_page_zone_review_items": len(overall_page_zone_review_items),
         "selection_reason_summary": dict(overall_selection_reasons),
         "exclusion_reason_summary": dict(overall_exclusion_reasons),
+        "reading_flow_summary": dict(overall_reading_flow_classifications),
+        "reading_flow_flag_summary": dict(overall_reading_flow_flags),
         "page_zone_flag_summary": dict(overall_page_zone_flags),
         "page_zone_review_items": overall_page_zone_review_items,
         "candidate_page_zone_summary": {
@@ -1075,6 +1185,14 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
     if report.get("exclusion_reason_summary"):
         lines.append(
             f"Exclusion reasons: {json.dumps(report['exclusion_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("reading_flow_summary"):
+        lines.append(
+            f"Reading flow: {json.dumps(report['reading_flow_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("reading_flow_flag_summary"):
+        lines.append(
+            f"Reading flow flags: {json.dumps(report['reading_flow_flag_summary'], ensure_ascii=False, sort_keys=True)}"
         )
     if report.get("page_zone_flag_summary"):
         lines.append(
@@ -1116,6 +1234,14 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             lines.append(
                 f"  page zone flags: {json.dumps(page['page_zone_flag_summary'], ensure_ascii=False, sort_keys=True)}"
             )
+        if page.get("reading_flow_summary"):
+            lines.append(
+                f"  reading flow: {json.dumps(page['reading_flow_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("reading_flow_flag_summary"):
+            lines.append(
+                f"  reading flow flags: {json.dumps(page['reading_flow_flag_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
         if page.get("candidate_page_zone_role_summary"):
             lines.append(
                 f"  candidate zone roles: {json.dumps(page['candidate_page_zone_role_summary'], ensure_ascii=False, sort_keys=True)}"
@@ -1133,9 +1259,11 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             )
         for candidate in page.get("candidates", [])[:3]:
             preview = candidate["text"].replace("\n", " | ").strip()[:180]
+            reading_flow = candidate.get("reading_flow", {})
             lines.append(
                 f"  block {candidate['block_index']} [{candidate.get('selection_reason', 'selected_as_unknown')}]: "
-                f"lines={candidate['line_count']} text={preview}"
+                f"lines={candidate['line_count']} "
+                f"flow={reading_flow.get('classification', 'unknown_flow')} text={preview}"
             )
         for excluded in page.get("excluded_blocks", [])[:3]:
             preview = excluded["text"].replace("\n", " | ").strip()[:180]
