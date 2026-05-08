@@ -217,6 +217,70 @@ def classify_page_zone(
     }
 
 
+def _page_zone_summary(items: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    vertical: Counter[str] = Counter()
+    horizontal: Counter[str] = Counter()
+
+    for item in items:
+        page_zone = item.get("page_zone", {})
+        vertical.update([page_zone.get("vertical", "unknown_vertical_zone")])
+        horizontal.update([page_zone.get("horizontal", "unknown_horizontal_zone")])
+
+    return {
+        "vertical": dict(vertical),
+        "horizontal": dict(horizontal),
+    }
+
+
+def _page_zone_field_summary(
+    items: list[dict[str, Any]],
+    field_name: str,
+    fallback_value: str,
+) -> dict[str, dict[str, dict[str, int]]]:
+    vertical: dict[str, Counter[str]] = {}
+    horizontal: dict[str, Counter[str]] = {}
+
+    for item in items:
+        page_zone = item.get("page_zone", {})
+        value = str(item.get(field_name) or fallback_value)
+        vertical_zone = str(page_zone.get("vertical") or "unknown_vertical_zone")
+        horizontal_zone = str(page_zone.get("horizontal") or "unknown_horizontal_zone")
+        vertical.setdefault(vertical_zone, Counter()).update([value])
+        horizontal.setdefault(horizontal_zone, Counter()).update([value])
+
+    return {
+        "vertical": {
+            zone: dict(counter)
+            for zone, counter in vertical.items()
+        },
+        "horizontal": {
+            zone: dict(counter)
+            for zone, counter in horizontal.items()
+        },
+    }
+
+
+def _merge_page_zone_field_summary(
+    target: dict[str, dict[str, Counter[str]]],
+    source: dict[str, dict[str, dict[str, int]]],
+) -> None:
+    for dimension in ("vertical", "horizontal"):
+        for zone, counts in source.get(dimension, {}).items():
+            target[dimension].setdefault(zone, Counter()).update(counts)
+
+
+def _serializable_page_zone_field_summary(
+    summary: dict[str, dict[str, Counter[str]]],
+) -> dict[str, dict[str, dict[str, int]]]:
+    return {
+        dimension: {
+            zone: dict(counter)
+            for zone, counter in zones.items()
+        }
+        for dimension, zones in summary.items()
+    }
+
+
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
     sizes = [
         float(span["size"])
@@ -712,6 +776,18 @@ def build_overlay_ready_report(
     total_excluded_blocks = 0
     overall_selection_reasons: Counter[str] = Counter()
     overall_exclusion_reasons: Counter[str] = Counter()
+    overall_candidate_vertical_zones: Counter[str] = Counter()
+    overall_candidate_horizontal_zones: Counter[str] = Counter()
+    overall_excluded_vertical_zones: Counter[str] = Counter()
+    overall_excluded_horizontal_zones: Counter[str] = Counter()
+    overall_candidate_page_zone_role_summary: dict[str, dict[str, Counter[str]]] = {
+        "vertical": {},
+        "horizontal": {},
+    }
+    overall_excluded_page_zone_reason_summary: dict[str, dict[str, Counter[str]]] = {
+        "vertical": {},
+        "horizontal": {},
+    }
 
     for page in pages:
         candidates: list[dict[str, Any]] = []
@@ -802,8 +878,28 @@ def build_overlay_ready_report(
             item.get("exclusion_reason", "excluded_as_unknown")
             for item in excluded_blocks
         )
+        candidate_page_zone_summary = _page_zone_summary(candidates)
+        excluded_page_zone_summary = _page_zone_summary(excluded_blocks)
+        candidate_page_zone_role_summary = _page_zone_field_summary(candidates, "role", "unknown_role")
+        excluded_page_zone_reason_summary = _page_zone_field_summary(
+            excluded_blocks,
+            "exclusion_reason",
+            "excluded_as_unknown",
+        )
         overall_selection_reasons.update(selection_reason_summary)
         overall_exclusion_reasons.update(exclusion_reason_summary)
+        overall_candidate_vertical_zones.update(candidate_page_zone_summary["vertical"])
+        overall_candidate_horizontal_zones.update(candidate_page_zone_summary["horizontal"])
+        overall_excluded_vertical_zones.update(excluded_page_zone_summary["vertical"])
+        overall_excluded_horizontal_zones.update(excluded_page_zone_summary["horizontal"])
+        _merge_page_zone_field_summary(
+            overall_candidate_page_zone_role_summary,
+            candidate_page_zone_role_summary,
+        )
+        _merge_page_zone_field_summary(
+            overall_excluded_page_zone_reason_summary,
+            excluded_page_zone_reason_summary,
+        )
 
         page_reports.append(
             {
@@ -813,6 +909,10 @@ def build_overlay_ready_report(
                 "excluded_block_count": len(excluded_blocks),
                 "selection_reason_summary": dict(selection_reason_summary),
                 "exclusion_reason_summary": dict(exclusion_reason_summary),
+                "candidate_page_zone_summary": candidate_page_zone_summary,
+                "excluded_page_zone_summary": excluded_page_zone_summary,
+                "candidate_page_zone_role_summary": candidate_page_zone_role_summary,
+                "excluded_page_zone_reason_summary": excluded_page_zone_reason_summary,
                 "candidates": candidates,
                 "excluded_blocks": excluded_blocks,
             }
@@ -826,6 +926,20 @@ def build_overlay_ready_report(
         "total_excluded_blocks": total_excluded_blocks,
         "selection_reason_summary": dict(overall_selection_reasons),
         "exclusion_reason_summary": dict(overall_exclusion_reasons),
+        "candidate_page_zone_summary": {
+            "vertical": dict(overall_candidate_vertical_zones),
+            "horizontal": dict(overall_candidate_horizontal_zones),
+        },
+        "excluded_page_zone_summary": {
+            "vertical": dict(overall_excluded_vertical_zones),
+            "horizontal": dict(overall_excluded_horizontal_zones),
+        },
+        "candidate_page_zone_role_summary": _serializable_page_zone_field_summary(
+            overall_candidate_page_zone_role_summary
+        ),
+        "excluded_page_zone_reason_summary": _serializable_page_zone_field_summary(
+            overall_excluded_page_zone_reason_summary
+        ),
         "pages": page_reports,
     }
 
@@ -846,6 +960,22 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         lines.append(
             f"Exclusion reasons: {json.dumps(report['exclusion_reason_summary'], ensure_ascii=False, sort_keys=True)}"
         )
+    if report.get("candidate_page_zone_summary"):
+        lines.append(
+            f"Candidate page zones: {json.dumps(report['candidate_page_zone_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("excluded_page_zone_summary"):
+        lines.append(
+            f"Excluded page zones: {json.dumps(report['excluded_page_zone_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("candidate_page_zone_role_summary"):
+        lines.append(
+            f"Candidate zone roles: {json.dumps(report['candidate_page_zone_role_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("excluded_page_zone_reason_summary"):
+        lines.append(
+            f"Excluded zone reasons: {json.dumps(report['excluded_page_zone_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
 
     for page in report.get("pages", []):
         lines.append(
@@ -853,6 +983,22 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             f"candidate_lines={page['candidate_line_count']} "
             f"excluded_blocks={page.get('excluded_block_count', 0)}"
         )
+        if page.get("candidate_page_zone_summary"):
+            lines.append(
+                f"  candidate zones: {json.dumps(page['candidate_page_zone_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("excluded_page_zone_summary"):
+            lines.append(
+                f"  excluded zones: {json.dumps(page['excluded_page_zone_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("candidate_page_zone_role_summary"):
+            lines.append(
+                f"  candidate zone roles: {json.dumps(page['candidate_page_zone_role_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("excluded_page_zone_reason_summary"):
+            lines.append(
+                f"  excluded zone reasons: {json.dumps(page['excluded_page_zone_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
         for candidate in page.get("candidates", [])[:3]:
             preview = candidate["text"].replace("\n", " | ").strip()[:180]
             lines.append(

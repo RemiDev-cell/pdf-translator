@@ -408,6 +408,44 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
         "selected_as_title": 1,
     }
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
+    assert report["candidate_page_zone_summary"] == {
+        "vertical": {"body_zone": 1, "header_zone": 1},
+        "horizontal": {"center_band": 2},
+    }
+    assert report["excluded_page_zone_summary"] == {
+        "vertical": {"header_zone": 1},
+        "horizontal": {"left_margin": 1},
+    }
+    assert report["candidate_page_zone_role_summary"] == {
+        "vertical": {
+            "body_zone": {"content": 1},
+            "header_zone": {"slide_title": 1},
+        },
+        "horizontal": {"center_band": {"content": 1, "slide_title": 1}},
+    }
+    assert report["excluded_page_zone_reason_summary"] == {
+        "vertical": {"header_zone": {"excluded_as_footer": 1}},
+        "horizontal": {"left_margin": {"excluded_as_footer": 1}},
+    }
+    assert report["pages"][0]["candidate_page_zone_summary"] == {
+        "vertical": {"body_zone": 1, "header_zone": 1},
+        "horizontal": {"center_band": 2},
+    }
+    assert report["pages"][0]["excluded_page_zone_summary"] == {
+        "vertical": {"header_zone": 1},
+        "horizontal": {"left_margin": 1},
+    }
+    assert report["pages"][0]["candidate_page_zone_role_summary"] == {
+        "vertical": {
+            "body_zone": {"content": 1},
+            "header_zone": {"slide_title": 1},
+        },
+        "horizontal": {"center_band": {"content": 1, "slide_title": 1}},
+    }
+    assert report["pages"][0]["excluded_page_zone_reason_summary"] == {
+        "vertical": {"header_zone": {"excluded_as_footer": 1}},
+        "horizontal": {"left_margin": {"excluded_as_footer": 1}},
+    }
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
     assert report["pages"][0]["candidates"][0]["page_zone"] == {
@@ -446,6 +484,14 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert "excluded_blocks=1" in text
     assert "selected_as_content" in text
     assert "excluded_as_footer" in text
+    assert "Candidate page zones:" in text
+    assert "Excluded page zones:" in text
+    assert "candidate zones:" in text
+    assert "excluded zones:" in text
+    assert "Candidate zone roles:" in text
+    assert "Excluded zone reasons:" in text
+    assert "candidate zone roles:" in text
+    assert "excluded zone reasons:" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -509,6 +555,22 @@ def test_build_overlay_ready_report_classifies_page_zones() -> None:
     assert zones[3] == {"vertical": "footer_zone", "horizontal": "center_band"}
     assert zones[4] == {"vertical": "body_zone", "horizontal": "left_margin"}
     assert zones[5] == {"vertical": "body_zone", "horizontal": "right_margin"}
+    assert report["candidate_page_zone_summary"] == {
+        "vertical": {"body_zone": 3, "footer_zone": 1, "header_zone": 1},
+        "horizontal": {"center_band": 3, "left_margin": 1, "right_margin": 1},
+    }
+    assert report["candidate_page_zone_role_summary"] == {
+        "vertical": {
+            "body_zone": {"content": 3},
+            "footer_zone": {"content": 1},
+            "header_zone": {"content": 1},
+        },
+        "horizontal": {
+            "center_band": {"content": 3},
+            "left_margin": {"content": 1},
+            "right_margin": {"content": 1},
+        },
+    }
 
 
 def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:
