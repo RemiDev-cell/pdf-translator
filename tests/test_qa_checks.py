@@ -403,11 +403,14 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
 
     assert report["total_candidate_blocks"] == 2
     assert report["total_excluded_blocks"] == 1
+    assert report["total_page_zone_review_items"] == 0
+    assert report["page_zone_review_items"] == []
     assert report["selection_reason_summary"] == {
         "selected_as_content": 1,
         "selected_as_title": 1,
     }
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
+    assert report["page_zone_flag_summary"] == {}
     assert report["candidate_page_zone_summary"] == {
         "vertical": {"body_zone": 1, "header_zone": 1},
         "horizontal": {"center_band": 2},
@@ -446,8 +449,12 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
         "vertical": {"header_zone": {"excluded_as_footer": 1}},
         "horizontal": {"left_margin": {"excluded_as_footer": 1}},
     }
+    assert report["pages"][0]["page_zone_flag_summary"] == {}
+    assert report["pages"][0]["page_zone_review_item_count"] == 0
+    assert report["pages"][0]["page_zone_review_items"] == []
     assert report["pages"][0]["candidates"][0]["block_index"] == 1
     assert report["pages"][0]["candidates"][0]["selection_reason"] == "selected_as_content"
+    assert report["pages"][0]["candidates"][0]["page_zone_flags"] == []
     assert report["pages"][0]["candidates"][0]["page_zone"] == {
         "vertical": "body_zone",
         "horizontal": "center_band",
@@ -467,8 +474,10 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     }
     assert report["pages"][0]["candidates"][1]["block_index"] == 2
     assert report["pages"][0]["candidates"][1]["selection_reason"] == "selected_as_title"
+    assert report["pages"][0]["candidates"][1]["page_zone_flags"] == []
     assert report["pages"][0]["excluded_blocks"][0]["block_index"] == 0
     assert report["pages"][0]["excluded_blocks"][0]["exclusion_reason"] == "excluded_as_footer"
+    assert report["pages"][0]["excluded_blocks"][0]["page_zone_flags"] == []
     assert report["pages"][0]["excluded_blocks"][0]["page_zone"] == {
         "vertical": "header_zone",
         "horizontal": "left_margin",
@@ -482,6 +491,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     }
     assert "candidate_blocks=2" in text
     assert "excluded_blocks=1" in text
+    assert "Total page zone review items: 0" in text
+    assert "page_zone_review_items=0" in text
     assert "selected_as_content" in text
     assert "excluded_as_footer" in text
     assert "Candidate page zones:" in text
@@ -571,6 +582,91 @@ def test_build_overlay_ready_report_classifies_page_zones() -> None:
             "right_margin": {"content": 1},
         },
     }
+    assert report["page_zone_flag_summary"] == {
+        "review_candidate_content_role_in_footer_zone": 1,
+        "review_candidate_content_role_in_header_zone": 1,
+        "review_candidate_content_role_in_margin": 2,
+    }
+    assert report["total_page_zone_review_items"] == 4
+    assert report["pages"][0]["page_zone_review_item_count"] == 4
+    assert report["page_zone_review_items"][0] == {
+        "page_number": 1,
+        "item_type": "candidate",
+        "block_index": 1,
+        "role": "content",
+        "page_zone": {"vertical": "header_zone", "horizontal": "center_band"},
+        "page_zone_flags": ["review_candidate_content_role_in_header_zone"],
+        "line_count": 1,
+        "text_preview": "top",
+        "selection_reason": "selected_as_content",
+    }
+    assert {
+        item["block_index"]: item["page_zone_flags"]
+        for item in report["pages"][0]["candidates"]
+    } == {
+        1: ["review_candidate_content_role_in_header_zone"],
+        2: [],
+        3: ["review_candidate_content_role_in_footer_zone"],
+        4: ["review_candidate_content_role_in_margin"],
+        5: ["review_candidate_content_role_in_margin"],
+    }
+
+
+def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "header",
+                        "bbox": {"x0": 30, "y0": 80, "x1": 70, "y1": 100},
+                        "text": "misplaced header",
+                        "lines": [
+                            {
+                                "text": "misplaced header",
+                                "bbox": {"x0": 30, "y0": 80, "x1": 70, "y1": 100},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    text = overlay_ready_report_to_text(report)
+
+    assert report["total_page_zone_review_items"] == 1
+    assert report["page_zone_flag_summary"] == {
+        "review_structural_exclusion_in_body_zone": 1,
+    }
+    assert report["pages"][0]["page_zone_flag_summary"] == {
+        "review_structural_exclusion_in_body_zone": 1,
+    }
+    assert report["pages"][0]["excluded_blocks"][0]["page_zone_flags"] == [
+        "review_structural_exclusion_in_body_zone"
+    ]
+    assert report["page_zone_review_items"] == [
+        {
+            "page_number": 1,
+            "item_type": "excluded",
+            "block_index": 1,
+            "role": "header",
+            "page_zone": {"vertical": "body_zone", "horizontal": "center_band"},
+            "page_zone_flags": ["review_structural_exclusion_in_body_zone"],
+            "line_count": 1,
+            "text_preview": "misplaced header",
+            "exclusion_reason": "excluded_as_header",
+        }
+    ]
+    assert "Page zone flags:" in text
+    assert "page zone flags:" in text
+    assert "Total page zone review items: 1" in text
+    assert "review excluded block 1" in text
 
 
 def test_build_overlay_ready_report_merges_slide_title_suffix_blocks() -> None:

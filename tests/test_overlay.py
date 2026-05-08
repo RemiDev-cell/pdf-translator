@@ -33,10 +33,24 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
                         "text": "Useful translated block",
                         "line_count": 2,
                         "page_zone": {"vertical": "header_zone", "horizontal": "left_margin"},
+                        "page_zone_flags": ["review_candidate_content_role_in_margin"],
                         "lines": [
                             {"text": "line 1", "bbox": {"x0": 1, "y0": 2, "x1": 3, "y1": 4}},
                             {"text": "line 2", "bbox": {"x0": 5, "y0": 6, "x1": 7, "y1": 8}},
                         ],
+                    }
+                ],
+                "page_zone_review_items": [
+                    {
+                        "page_number": 10,
+                        "item_type": "candidate",
+                        "block_index": 98,
+                        "role": "slide_title",
+                        "page_zone": {"vertical": "header_zone", "horizontal": "left_margin"},
+                        "page_zone_flags": ["review_candidate_content_role_in_margin"],
+                        "line_count": 2,
+                        "text_preview": "Useful translated block",
+                        "selection_reason": "selected_as_title",
                     }
                 ],
             }
@@ -51,6 +65,8 @@ def test_build_pre_overlay_report_keeps_region_geometry(tmp_path) -> None:
     assert report["pages"][0]["regions"][0]["block_index"] == 98
     assert report["pages"][0]["regions"][0]["role"] == "slide_title"
     assert "page_zone" not in report["pages"][0]["regions"][0]
+    assert "page_zone_flags" not in report["pages"][0]["regions"][0]
+    assert "page_zone_review_items" not in report["pages"][0]["regions"][0]
     assert "Page 10: regions=1" in text
     assert json_path.exists()
     assert text_path.exists()

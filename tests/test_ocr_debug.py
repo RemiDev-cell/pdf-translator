@@ -152,7 +152,21 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
                         "role": "content",
                         "line_count": 2,
                         "page_zone": {"vertical": "body_zone", "horizontal": "center_band"},
+                        "page_zone_flags": ["review_candidate_content_role_in_margin"],
                         "text": "Bloc natif principal avec assez de texte pour la revue.",
+                    }
+                ],
+                "page_zone_review_items": [
+                    {
+                        "page_number": 1,
+                        "item_type": "candidate",
+                        "block_index": 2,
+                        "role": "content",
+                        "page_zone": {"vertical": "body_zone", "horizontal": "center_band"},
+                        "page_zone_flags": ["review_candidate_content_role_in_margin"],
+                        "line_count": 2,
+                        "text_preview": "Bloc natif principal avec assez de texte pour la revue.",
+                        "selection_reason": "selected_as_content",
                     }
                 ],
             }
@@ -187,6 +201,8 @@ def test_build_native_ocr_fusion_report_combines_native_and_ocr_views(tmp_path: 
     assert report['total_ocr_regions'] == 1
     assert report['pages'][0]['native_regions'][0]['block_index'] == 2
     assert 'page_zone' not in report['pages'][0]['native_regions'][0]
+    assert 'page_zone_flags' not in report['pages'][0]['native_regions'][0]
+    assert 'page_zone_review_items' not in report['pages'][0]['native_regions'][0]
     assert report['pages'][0]['ocr_regions'][0]['ocr_backend'] == 'tesseract'
     assert report['pages'][0]['ocr_regions'][0]['text'] == full_ocr_text
     assert 'native B2' in text
