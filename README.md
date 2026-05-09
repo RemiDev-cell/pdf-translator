@@ -1,61 +1,60 @@
 # pdf-translator
 
-`pdf-translator` est un pipeline Python en cours de développement pour traduire des PDF scientifiques du français vers l'anglais tout en préservant autant que possible la structure et la fidélité visuelle.
+`pdf-translator` is a work-in-progress Python pipeline for translating scientific PDFs from French to English while preserving as much structure and visual fidelity as possible.
 
-L'objectif à long terme n'est pas seulement la traduction du texte, mais la reconstruction fidèle du PDF :
+The long-term goal is not just text translation, but faithful PDF reconstruction:
 
-- préserver la mise en page
-- préserver les figures, diagrammes et structures de page
-- protéger les tokens techniques et les fragments sensibles
-- préparer un futur workflow d'overlay / recomposition en place
+- preserve layout
+- preserve figures, diagrams, and page structure
+- protect technical tokens and sensitive fragments
+- prepare a future overlay / in-place recomposition workflow
 
-La version actuelle est un prototype local `accuracy-first`. Elle est volontairement conservatrice, inspectable, et plus lente qu'un système de production.
+The current version is an `accuracy-first` local prototype. It is intentionally conservative, debuggable, and slower than a production system would be.
 
-## État Actuel
+## Current Status
 
-Ce qui fonctionne déjà :
+What already works:
 
-- extraction PDF structurée avec PyMuPDF
-- représentation intermédiaire (IR) en JSON
-- protection par placeholders pour les fragments techniques
-- traduction locale via LM Studio
-- traduction par lots avec validation et fallbacks
-- audit des blocs répétés / éléments de chrome de slides
-- artefacts de diagnostic `overlay-ready` et `pre-overlay`
-- previews visuelles d'overlay sur des pages sélectionnées
-- prototype stabilisé d'overlay sur texte natif pour des pages réelles représentatives
-- branche OCR expérimentale pour le texte en images raster, avec crops de debug, revue OCR, preview de traduction mixte native/OCR, et sortie d'overlay diagnostic
+- structured PDF extraction with PyMuPDF
+- intermediate representation (IR) in JSON
+- placeholder protection for technical fragments
+- local translation through LM Studio
+- batch translation with validation and fallbacks
+- repeated block / slide chrome audit
+- overlay-ready and pre-overlay diagnostic artifacts
+- visual overlay previews on selected pages
+- stabilized native-text overlay prototype on representative real pages
+- experimental OCR branch for raster-image text, with debug crops, OCR review, mixed native/OCR translation preview, and diagnostic overlay output
 
-Ce qui n'est pas encore terminé :
+What is not finished yet:
 
-- reconstruction finale du PDF traduit
-- overlay de production sur document complet
-- recomposition OCR de production pour le texte intégré dans des images raster
-- glossaires adaptatifs pilotés par l'utilisateur et les documents
-- gestion avancée des formules / équations
-- reconstruction robuste des tableaux
-- performances et passage à l'échelle de niveau production
+- final translated PDF reconstruction
+- full-document production overlay
+- production OCR recomposition for text embedded in raster images
+- advanced formula / equation handling
+- robust table reconstruction
+- production-grade performance and scaling
 
-## Pourquoi Ce Projet Existe
+## Why This Project Exists
 
-De nombreux PDF scientifiques sont difficiles à bien traduire parce qu'ils contiennent :
+Many scientific PDFs are difficult to translate well because they contain:
 
-- des mises en page multi-colonnes
-- des en-têtes et pieds de page répétés
-- des diagrammes et callouts
-- des images contenant du texte intégré
-- des équations, notations et labels symboliques
-- des decks de slides exportés avec une structure visuelle dense
+- multi-column layouts
+- repeated headers and footers
+- diagrams and callouts
+- images with embedded text
+- equations, notation, and symbolic labels
+- exported slide decks with heavy visual structure
 
-Ce projet est construit par étapes :
+This project is being built in stages:
 
-1. établir un prototype local fiable
-2. valider l'extraction et la traduction sur des documents réels
-3. préparer une sélection de régions compatible avec un futur overlay
-4. passer à un runtime plus robuste et à de meilleurs modèles
-5. monter en charge une fois l'architecture correcte
+1. establish a reliable local prototype
+2. validate extraction and translation behavior on real documents
+3. prepare overlay-friendly region selection
+4. move to a stronger runtime and better models
+5. scale up once the architecture is correct
 
-## Organisation Du Dépôt
+## Repository Layout
 
 ```text
 pdf-translator/
@@ -76,16 +75,16 @@ pdf-translator/
 └── tests/
 ```
 
-## Stack Locale
+## Local Stack
 
-Environnement local de référence utilisé pendant le développement :
+Reference local environment used during development:
 
 - Python `3.9.6`
-- environnement virtuel local dans `.venv`
-- serveur local LM Studio
-- modèle testé : `translategemma-4b-it`
-- base API locale : `http://localhost:4000/v1`
-- binaire Tesseract OCR optionnel pour le workflow OCR expérimental
+- local virtual environment in `.venv`
+- LM Studio local server
+- tested model: `translategemma-4b-it`
+- local API base: `http://localhost:4000/v1`
+- optional Tesseract OCR binary for the experimental OCR workflow
 
 ## Installation
 
@@ -95,7 +94,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Pour le workflow OCR expérimental sur macOS :
+For the experimental OCR workflow on macOS:
 
 ```bash
 brew install tesseract
@@ -103,9 +102,9 @@ brew install tesseract
 
 ## Configuration
 
-Les paramètres principaux se trouvent dans `.env`.
+Main settings live in `.env`.
 
-Exemple :
+Example:
 
 ```env
 PDF_TRANSLATOR_MODEL_BACKEND=lmstudio
@@ -121,9 +120,9 @@ PDF_TRANSLATOR_OCR_BACKEND=auto
 PDF_TRANSLATOR_OCR_TESSERACT_BIN=tesseract
 ```
 
-## Paramètres Stables Recommandés
+## Recommended Stable Settings
 
-Pour la machine locale actuelle, le profil le plus stable observé jusqu'ici est :
+For the current local machine, the most stable profile observed so far is:
 
 - `PDF_TRANSLATOR_REQUEST_TIMEOUT_SECONDS=45`
 - `PDF_TRANSLATOR_CONTEXT_GROUP_MAX_LINES=1`
@@ -131,144 +130,144 @@ Pour la machine locale actuelle, le profil le plus stable observé jusqu'ici est
 - `PDF_TRANSLATOR_BATCH_MAX_SEGMENTS=2`
 - `PDF_TRANSLATOR_BATCH_MAX_CHARS=800`
 
-Ces valeurs privilégient la fiabilité plutôt que la vitesse.
+These defaults favor reliability over speed.
 
-## Commandes Principales
+## Main Commands
 
-Inspecter un PDF et écrire la représentation intermédiaire :
+Inspect a PDF and write the intermediate representation:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli inspect data/input/myfile.pdf
 ```
 
-Lancer un audit ciblé sur des pages sélectionnées :
+Run a targeted audit on selected pages:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli audit-sample data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-Générer les blocs candidats `overlay-ready` :
+Generate overlay-ready candidate blocks:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli overlay-ready data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-Générer les régions `pre-overlay` avec leurs bounding boxes :
+Generate pre-overlay regions with bounding boxes:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli pre-overlay data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-Générer des diagnostics visuels d'overlay :
+Generate visual overlay diagnostics:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli overlay-preview data/input/myfile.pdf --pages "1,3,10,22"
 ```
 
-Générer une preview de traduction lisible :
+Generate a readable translation preview:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli translation-preview data/input/myfile.pdf --pages "10,22"
 ```
 
-Lancer le workflow OCR expérimental sur un PDF hybride ou scanné :
+Run the experimental OCR workflow on a hybrid or scanned-image PDF:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
 ```
 
-Essayer une preview de traduction OCR au niveau page sans tenter de recomposition d'image :
+Try a page-level OCR translation preview without attempting image recomposition:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli ocr-page-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract
 ```
 
-Générer une preview multi-pages du document pour revue, avec overlays natifs prudents et régions OCR annotées :
+Generate a multi-page document preview for review, with safe native overlays and annotated OCR regions:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli document-preview data/input/supportpourocr01.pdf --pages 1-3 --backend tesseract
 ```
 
-Générer une preview routée du document. Les pages natives seules utilisent la chaîne d'overlay natif ; les pages avec candidats OCR utilisent la chaîne de fusion native/OCR :
+Generate a routed document preview. Native-only pages use the native overlay chain; pages with OCR candidates use the native/OCR fusion chain:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli document-preview data/input/myfile.pdf --pages "1-3" --backend tesseract
 ```
 
-Générer directement une preview d'overlay sur texte natif quand l'OCR n'est pas nécessaire :
+Generate a native-text overlay preview directly when OCR is not needed:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli native-preview data/input/myfile.pdf --pages "1-3"
 ```
 
-## Artefacts De Debug
+## Debug Artifacts
 
-Le pipeline écrit des artefacts intermédiaires utiles dans `data/debug/`, notamment :
+The pipeline writes useful intermediate artifacts under `data/debug/`, including:
 
 - `document_ir.json`
-- rapports d'audit
-- rapports `overlay-ready`
-- rapports `pre-overlay`
-- PDF et PNG de preview overlay
-- fichiers de preview de traduction
-- rapports de candidats OCR, crops, manifests et rapports de revue
-- plans de fusion native/OCR, previews de traduction, plans de remplacement, rapports de stratégie et PDF d'overlay diagnostic
+- audit reports
+- overlay-ready reports
+- pre-overlay reports
+- overlay preview PDFs and PNGs
+- translation preview files
+- OCR candidate reports, crops, manifests, and review reports
+- mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
 
-Ces artefacts sont au coeur du workflow actuel et rendent le système beaucoup plus simple à inspecter et à améliorer.
+These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
 
-## Jalon V1 Stabilisé
+## Stabilized V1 Milestone
 
-Le jalon actuel est un prototype stabilisé `texte natif + overlay`.
+The current milestone is a stabilized `native text + overlay` prototype.
 
-Cela signifie que le projet peut maintenant :
+This means the project can now:
 
-- détecter et filtrer le chrome de slides, les en-têtes / pieds de page répétés, le bruit de diagramme et les numéros de page
-- sélectionner des régions candidates à l'overlay depuis de vrais PDF
-- traduire de nombreux labels scientifiques courts via un glossaire contrôlé
-- traduire les blocs narratifs avec des fallbacks conservateurs
-- générer des plans de remplacement avec niveaux de risque
-- rendre des prototypes d'overlay directement sur les pages PDF originales
+- detect and filter slide chrome, repeated headers / footers, diagram noise, and page numbers
+- select overlay candidate regions from real PDFs
+- translate many short scientific labels through a controlled glossary
+- translate narrative text blocks with conservative fallbacks
+- generate replacement plans with risk levels
+- render overlay prototypes directly onto the original PDF pages
 
-Pages représentatives déjà validées sur le vrai deck scientifique exporté depuis PowerPoint :
+Representative pages already validated on the real PowerPoint-exported scientific deck:
 
-- page `3` : labels denses + paragraphes explicatifs
-- page `10` : bandeau de titre + page de diagramme bruitée
-- page `22` : slide pédagogique structurée
-- page `34` : slide explicative narrative
-- page `120` : slide pédagogique courte
-- page `160` : titre + labels scientifiques de diagramme
+- page `3`: dense labels + explanatory paragraphs
+- page `10`: title banner + noisy diagram page
+- page `22`: structured pedagogical slide
+- page `34`: narrative explanatory slide
+- page `120`: short pedagogical slide
+- page `160`: title + scientific diagram labels
 
-Limite importante de ce jalon :
+Important boundary of this milestone:
 
-- il s'agit d'un bon `prototype d'overlay sur texte natif`
-- ce n'est pas encore le moteur final de reconstruction de production
-- l'OCR et le texte dans les images sont maintenant explorés dans un workflow expérimental séparé, pas dans le chemin d'overlay de production
+- this is a strong `text-native overlay prototype`
+- it is not yet the final production reconstruction engine
+- OCR and text-inside-image handling are now explored in a separate experimental workflow, not in the production overlay path
 
-## Workflow OCR Expérimental
+## Experimental OCR Workflow
 
-La branche OCR est volontairement séparée du chemin stabilisé d'overlay sur texte natif.
+The OCR branch is intentionally separate from the stabilized native-text overlay path.
 
-Elle prend actuellement en charge :
+It currently supports:
 
-- la détection des blocs image comme candidats OCR pendant l'extraction PyMuPDF
-- le crop des régions image candidates en fichiers PNG de debug
-- l'exécution de l'OCR via Tesseract ou un backend mock
-- la revue de qualité OCR et des caractères suspects
-- la combinaison du texte natif et du texte OCR dans un plan de fusion
-- la traduction de segments mixtes natifs/OCR
-- la construction d'un plan de remplacement mixte avec stratégies explicites
-- la recommandation indiquant si la sortie OCR doit rester une annotation latérale ou devenir un futur candidat d'overlay sur image
-- le rendu d'un PDF diagnostic qui applique les remplacements natifs et annote les régions OCR en attente
+- detecting image blocks as OCR candidates during PyMuPDF extraction
+- cropping candidate image regions to PNG debug files
+- running OCR through Tesseract or a mock backend
+- reviewing OCR quality and suspicious characters
+- combining native text and OCR text into a fusion plan
+- translating mixed native/OCR segments
+- building a mixed replacement plan with explicit strategies
+- recommending whether OCR output should remain a side annotation or become a future image-overlay candidate
+- rendering a diagnostic PDF that applies native replacements and annotates pending OCR regions
 
-Le workflow en une commande est :
+The one-command workflow is:
 
 ```bash
 ./.venv/bin/python -m pdf_translator.cli ocr-experiment data/input/supportpourocr01.pdf --backend tesseract
 ```
 
-Le point d'entrée recommandé pour la revue est maintenant `document-preview`, qui écrit d'abord un rapport de routing puis délègue soit à la preview d'overlay natif, soit à la preview de fusion native/OCR.
+The preferred review entrypoint is now `document-preview`, which first writes a routing report and then dispatches to either the native overlay preview or the native/OCR fusion preview.
 
-Sorties utiles :
+Useful outputs include:
 
 - `data/debug/*_ocr_dry_run_manifest.json`
 - `data/debug/*_ocr_dry_run_page_*_ocr_*.png`
@@ -281,16 +280,16 @@ Sorties utiles :
 - `data/debug/*_ocr_page_translation_preview.txt`
 - `data/debug/*_fusion_overlay_diagnostics.pdf`
 
-Limite OCR actuelle :
+Current OCR boundary:
 
-- le texte OCR peut être extrait, revu, traduit et inclus dans des artefacts de diagnostic
-- les remplacements de texte natif peuvent toujours être prévisualisés via le chemin d'overlay
-- les régions OCR ne sont pas encore réécrites à l'intérieur de l'image scannée elle-même
-- les longues traductions OCR sont actuellement recommandées comme annotations latérales lorsqu'elles ne tiennent pas de façon sûre dans la région image source
+- OCR text can be extracted, reviewed, translated, and included in diagnostic artifacts
+- native text replacements can still be previewed through the overlay path
+- OCR regions are not yet rewritten inside the scanned image itself
+- long OCR translations are currently recommended as side annotations when they do not fit safely into the source image region
 
-## Entrées De Test
+## Test Inputs
 
-PDF synthétiques et réels actuellement utilisés :
+Synthetic and real test PDFs currently used:
 
 - `docnavettepourtestsimple.pdf`
 - `simple-fr.pdf`
@@ -298,105 +297,79 @@ PDF synthétiques et réels actuellement utilisés :
 - `layout-tricky.pdf`
 - `supportpourocr01.pdf`
 
-Les PDF synthétiques peuvent être régénérés avec :
+Synthetic PDFs can be regenerated with:
 
 ```bash
 ./.venv/bin/python scripts/generate_test_pdfs.py
 ```
 
-## Protection Par Placeholders
+## Placeholder Protection
 
-Le pipeline protège actuellement :
+The current pipeline protects:
 
 - emails
 - URLs
-- longs hashes de commit
-- dates ISO
-- versions logicielles comme `x.y.z`
+- long commit hashes
+- ISO dates
+- software versions like `x.y.z`
 
-Cela aide à réduire la corruption accidentelle pendant la traduction.
+This helps reduce accidental corruption during translation.
 
-## Futurs Glossaires Adaptatifs
+## Real-World Document Strategy
 
-Le pipeline devra à terme prendre en charge un ou plusieurs glossaires adaptatifs afin de rendre les traductions de plus en plus pertinentes.
+The project is currently being validated on two kinds of real documents:
 
-Ce n'est pas encore implémenté. Le code actuel contient seulement un petit glossaire statique pour quelques labels scientifiques et phrases de slides contrôlés. L'orientation long terme est plus large :
+- a PowerPoint-exported teaching deck with dense layout and many images
+- a smaller hybrid PDF with less predictable extraction quality
 
-- maintenir un glossaire général appris à partir des documents précédemment traduits
-- permettre aux utilisateurs d'enrichir le glossaire manuellement à tout moment
-- garder les entrées de glossaire inspectables et modifiables plutôt que cachées dans l'état d'un modèle
-- prendre en charge des catégories de glossaire, comme des disciplines scientifiques ou des vocabulaires client/domaine
-- laisser l'utilisateur choisir la portée active du glossaire pour une tâche de traduction
+This is intentional:
 
-Exemples de choix futurs :
+- slide-export PDFs are a strong target for overlay preparation
+- hybrid PDFs are useful later for OCR readiness and robustness testing
 
-- utiliser seulement le glossaire général
-- utiliser un ou plusieurs glossaires de catégories, comme biologie, mathématiques, physique, médecine ou administration
-- combiner le glossaire général avec des catégories sélectionnées
-- désactiver entièrement l'usage du glossaire pour une tâche
+## Known Limitations
 
-L'objectif est que l'outil devienne de plus en plus précis tout en restant contrôlable. Par exemple, un document de biologie devrait pouvoir utiliser une terminologie propre à la biologie, tandis qu'un document de mathématiques devrait pouvoir activer une couche terminologique différente.
-
-Cette fonctionnalité doit être conçue comme une brique explicite du pipeline avant d'ajouter une approche augmentée par récupération. Les entrées de glossaire sont des contraintes terminologiques, pas du contexte générique. Une future couche de type RAG pourra être utile pour de très grands glossaires, des mémoires de traduction, des guides de style ou des notes de domaine, mais le premier besoin est un système de glossaire déterministe et auditable, que l'utilisateur peut sélectionner, enrichir et relire.
-
-## Stratégie Sur Documents Réels
-
-Le projet est actuellement validé sur deux types de documents réels :
-
-- un deck pédagogique exporté depuis PowerPoint avec mise en page dense et nombreuses images
-- un PDF hybride plus petit avec une qualité d'extraction moins prévisible
-
-C'est volontaire :
-
-- les PDF exportés depuis des slides sont une cible forte pour la préparation d'overlay
-- les PDF hybrides sont utiles plus tard pour la préparation OCR et les tests de robustesse
-
-## Limites Connues
-
-- la sortie du modèle local peut encore être incohérente sur les blocs difficiles
-- certaines régions longues nécessitent encore des fallbacks déterministes ou une aide de glossaire
-- le support des glossaires est actuellement statique et limité ; les glossaires adaptatifs utilisateur/catégorie sont un travail futur
-- l'OCR est expérimental et orienté debug, pas recomposition de production
-- le texte de diagramme intégré dans les images n'est pas encore reconstruit en place
-- la notation scientifique très chargée en formules nécessite encore une logique dédiée
-- les heuristiques actuelles sont utiles, mais pas finales
+- local model output can still be inconsistent on difficult blocks
+- some longer regions still need deterministic fallbacks or glossary help
+- OCR is experimental and debug-first, not production recomposition
+- diagram text embedded in images is not yet reconstructed in-place
+- formula-heavy scientific notation still needs dedicated logic
+- current heuristics are useful, but not final
 
 ## Roadmap
 
-Court terme :
+Short term:
 
-1. garder la v1 locale stable
-2. continuer à valider la généralisation de l'overlay sur de nouvelles pages représentatives
-3. valider le workflow OCR expérimental sur davantage de fixtures hybrides/scannées
+1. keep the local v1 stable
+2. continue validating overlay generalization on new representative pages
+3. validate the experimental OCR workflow on more hybrid/scanned fixtures
 
-Moyen terme :
+Medium term:
 
-1. passer à un runtime et à une pile de modèles plus robustes
-2. réactiver et valider un groupement contextuel plus riche
-3. concevoir le stockage adaptatif des glossaires, le matching, l'enrichissement utilisateur et la sélection de catégories
-4. décider de la stratégie de rendu OCR : annotations latérales, overlay de région image, ou reconstruction d'image plus profonde
+1. move to a stronger runtime and model stack
+2. reactivate and validate richer contextual grouping
+3. decide the OCR rendering strategy: side annotations, image-region overlay, or deeper image reconstruction
 
-Long terme :
+Long term:
 
-1. reconstruire fidèlement les PDF traduits
-2. prendre en charge les diagrammes, figures et textes intégrés
-3. prendre en charge des glossaires de traduction généraux et spécifiques à des domaines, s'améliorant continuellement
-4. passer le pipeline à l'échelle pour des documents plus volumineux et de meilleures performances
+1. reconstruct translated PDFs faithfully
+2. support diagrams, figures, and embedded text
+3. scale the pipeline for larger documents and faster throughput
 
-## Développement
+## Development
 
-Lancer les tests avec :
+Run tests with:
 
 ```bash
 ./.venv/bin/python -m pytest
 ```
 
-Le projet privilégie actuellement :
+The project currently prioritizes:
 
-- la correction plutôt que la vitesse
-- l'inspectabilité plutôt que l'opacité
-- la transférabilité plutôt que le surapprentissage local
+- correctness over speed
+- inspectability over opacity
+- transferability over local overfitting
 
-## Licence
+## License
 
-Aucune licence n'a encore été ajoutée.
+No license has been added yet.
