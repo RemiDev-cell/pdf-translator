@@ -414,6 +414,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["exclusion_reason_summary"] == {"excluded_as_footer": 1}
     assert report["reading_flow_summary"] == {"single_column_flow": 2}
     assert report["reading_flow_flag_summary"] == {}
+    assert report["overlay_readiness_summary"] == {"ready": 1}
+    assert report["overlay_readiness_reason_summary"] == {}
     assert report["page_zone_flag_summary"] == {}
     assert report["candidate_page_zone_summary"] == {
         "vertical": {"body_zone": 1, "header_zone": 1},
@@ -457,6 +459,13 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert report["pages"][0]["reading_flow_flag_summary"] == {}
     assert report["pages"][0]["reading_flow_review_item_count"] == 0
     assert report["pages"][0]["reading_flow_review_items"] == []
+    assert report["pages"][0]["overlay_readiness"] == {
+        "status": "ready",
+        "reason_summary": {},
+        "review_item_count": 0,
+        "candidate_block_count": 2,
+        "excluded_block_count": 1,
+    }
     assert report["pages"][0]["page_zone_flag_summary"] == {}
     assert report["pages"][0]["page_zone_review_item_count"] == 0
     assert report["pages"][0]["page_zone_review_items"] == []
@@ -515,6 +524,8 @@ def test_build_overlay_ready_report_keeps_content_and_slide_title_blocks(tmp_pat
     assert "excluded_blocks=1" in text
     assert "Total page zone review items: 0" in text
     assert "Total reading flow review items: 0" in text
+    assert 'Overlay readiness: {"ready": 1}' in text
+    assert "readiness=ready" in text
     assert "page_zone_review_items=0" in text
     assert "reading_flow_review_items=0" in text
     assert "selected_as_content" in text
@@ -664,6 +675,25 @@ def test_build_overlay_ready_report_classifies_page_zones() -> None:
         4: ["review_candidate_content_role_in_margin"],
         5: ["review_candidate_content_role_in_margin"],
     }
+    assert report["overlay_readiness_summary"] == {"review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_candidate_content_role_in_footer_zone": 1,
+        "review_candidate_content_role_in_header_zone": 1,
+        "review_candidate_content_role_in_margin": 2,
+        "review_candidate_order_moves_up_page": 1,
+    }
+    assert report["pages"][0]["overlay_readiness"] == {
+        "status": "review",
+        "reason_summary": {
+            "review_candidate_content_role_in_footer_zone": 1,
+            "review_candidate_content_role_in_header_zone": 1,
+            "review_candidate_content_role_in_margin": 2,
+            "review_candidate_order_moves_up_page": 1,
+        },
+        "review_item_count": 5,
+        "candidate_block_count": 5,
+        "excluded_block_count": 0,
+    }
 
 
 def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> None:
@@ -697,6 +727,21 @@ def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> N
     assert report["total_reading_flow_review_items"] == 0
     assert report["reading_flow_review_items"] == []
     assert report["total_page_zone_review_items"] == 1
+    assert report["overlay_readiness_summary"] == {"blocked": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "blocked_no_overlay_candidates": 1,
+        "review_structural_exclusion_in_body_zone": 1,
+    }
+    assert report["pages"][0]["overlay_readiness"] == {
+        "status": "blocked",
+        "reason_summary": {
+            "blocked_no_overlay_candidates": 1,
+            "review_structural_exclusion_in_body_zone": 1,
+        },
+        "review_item_count": 1,
+        "candidate_block_count": 0,
+        "excluded_block_count": 1,
+    }
     assert report["page_zone_flag_summary"] == {
         "review_structural_exclusion_in_body_zone": 1,
     }
@@ -720,9 +765,92 @@ def test_build_overlay_ready_report_flags_body_zone_structural_exclusions() -> N
         }
     ]
     assert "Page zone flags:" in text
+    assert 'Overlay readiness: {"blocked": 1}' in text
+    assert "Overlay readiness reasons:" in text
+    assert "readiness=blocked" in text
     assert "page zone flags:" in text
     assert "Total page zone review items: 1" in text
     assert "review excluded block 1" in text
+
+
+def test_build_overlay_ready_report_marks_simple_body_page_ready() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 200,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 70, "x1": 160, "y1": 100},
+                        "text": "Simple paragraph",
+                        "lines": [
+                            {
+                                "text": "Simple paragraph",
+                                "bbox": {"x0": 40, "y0": 70, "x1": 160, "y1": 100},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["overlay_readiness_summary"] == {"ready": 1}
+    assert report["overlay_readiness_reason_summary"] == {}
+    assert report["pages"][0]["overlay_readiness"] == {
+        "status": "ready",
+        "reason_summary": {},
+        "review_item_count": 0,
+        "candidate_block_count": 1,
+        "excluded_block_count": 0,
+    }
+
+
+def test_build_overlay_ready_report_marks_layout_group_for_review() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 300,
+                "height": 300,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "table_header",
+                        "bbox": {"x0": 40, "y0": 80, "x1": 200, "y1": 100},
+                        "text": "Header",
+                        "lines": [{"text": "Header", "bbox": {"x0": 40, "y0": 80, "x1": 200, "y1": 100}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "table_cell",
+                        "bbox": {"x0": 40, "y0": 105, "x1": 200, "y1": 125},
+                        "text": "Cell",
+                        "lines": [{"text": "Cell", "bbox": {"x0": 40, "y0": 105, "x1": 200, "y1": 125}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["overlay_readiness_summary"] == {"review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_layout_group_table_group": 1,
+    }
+    assert report["pages"][0]["overlay_readiness"] == {
+        "status": "review",
+        "reason_summary": {"review_layout_group_table_group": 1},
+        "review_item_count": 1,
+        "candidate_block_count": 2,
+        "excluded_block_count": 0,
+    }
 
 
 def test_build_overlay_ready_report_classifies_table_and_caption_reading_flow() -> None:

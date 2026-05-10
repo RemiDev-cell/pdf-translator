@@ -735,6 +735,51 @@ def _layout_group_review_items(groups: list[dict[str, Any]], page_number: int | 
     ]
 
 
+def _build_overlay_readiness(
+    candidates: list[dict[str, Any]],
+    excluded_blocks: list[dict[str, Any]],
+    page_zone_review_items: list[dict[str, Any]],
+    reading_flow_review_items: list[dict[str, Any]],
+    layout_group_review_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    reason_summary: Counter[str] = Counter()
+
+    if not candidates:
+        reason_summary["blocked_no_overlay_candidates"] += 1
+
+    for item in page_zone_review_items:
+        reason_summary.update(item.get("page_zone_flags", []))
+
+    for item in reading_flow_review_items:
+        reason_summary.update(item.get("flags", []))
+
+    complex_layout_review_count = 0
+    for item in layout_group_review_items:
+        group_type = item.get("group_type", "unknown_group")
+        if group_type in {"ingredient_list_group", "instruction_group", "step_group", "table_group"}:
+            reason_summary[f"review_layout_group_{group_type}"] += 1
+            complex_layout_review_count += 1
+
+    if not candidates:
+        status = "blocked"
+    elif reason_summary:
+        status = "review"
+    else:
+        status = "ready"
+
+    return {
+        "status": status,
+        "reason_summary": dict(reason_summary),
+        "review_item_count": (
+            len(page_zone_review_items)
+            + len(reading_flow_review_items)
+            + complex_layout_review_count
+        ),
+        "candidate_block_count": len(candidates),
+        "excluded_block_count": len(excluded_blocks),
+    }
+
+
 def _font_size_summary(lines: list[dict[str, Any]]) -> dict[str, float | int | None]:
     sizes = [
         float(span["size"])
@@ -1237,6 +1282,8 @@ def build_overlay_ready_report(
     overall_reading_flow_classifications: Counter[str] = Counter()
     overall_reading_flow_flags: Counter[str] = Counter()
     overall_layout_groups: Counter[str] = Counter()
+    overall_overlay_readiness_statuses: Counter[str] = Counter()
+    overall_overlay_readiness_reasons: Counter[str] = Counter()
     overall_candidate_vertical_zones: Counter[str] = Counter()
     overall_candidate_horizontal_zones: Counter[str] = Counter()
     overall_excluded_vertical_zones: Counter[str] = Counter()
@@ -1346,6 +1393,13 @@ def build_overlay_ready_report(
             excluded_blocks,
             page.get("page_number"),
         )
+        overlay_readiness = _build_overlay_readiness(
+            candidates,
+            excluded_blocks,
+            page_zone_review_items,
+            reading_flow_review_items,
+            layout_group_review_items,
+        )
         overall_layout_group_review_items.extend(layout_group_review_items)
         overall_reading_flow_review_items.extend(reading_flow_review_items)
         overall_page_zone_review_items.extend(page_zone_review_items)
@@ -1378,6 +1432,8 @@ def build_overlay_ready_report(
         overall_reading_flow_classifications.update(reading_flow_summary)
         overall_reading_flow_flags.update(reading_flow_flag_summary)
         overall_layout_groups.update(layout_group_summary)
+        overall_overlay_readiness_statuses.update([overlay_readiness["status"]])
+        overall_overlay_readiness_reasons.update(overlay_readiness["reason_summary"])
         _merge_page_zone_field_summary(
             overall_candidate_page_zone_role_summary,
             candidate_page_zone_role_summary,
@@ -1404,6 +1460,7 @@ def build_overlay_ready_report(
                 "layout_groups": layout_groups,
                 "layout_group_review_item_count": len(layout_group_review_items),
                 "layout_group_review_items": layout_group_review_items,
+                "overlay_readiness": overlay_readiness,
                 "page_zone_flag_summary": dict(page_zone_flag_summary),
                 "page_zone_review_item_count": len(page_zone_review_items),
                 "page_zone_review_items": page_zone_review_items,
@@ -1432,6 +1489,8 @@ def build_overlay_ready_report(
         "reading_flow_review_items": overall_reading_flow_review_items,
         "layout_group_summary": dict(overall_layout_groups),
         "layout_group_review_items": overall_layout_group_review_items,
+        "overlay_readiness_summary": dict(overall_overlay_readiness_statuses),
+        "overlay_readiness_reason_summary": dict(overall_overlay_readiness_reasons),
         "page_zone_flag_summary": dict(overall_page_zone_flags),
         "page_zone_review_items": overall_page_zone_review_items,
         "candidate_page_zone_summary": {
@@ -1483,6 +1542,14 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         lines.append(
             f"Layout groups: {json.dumps(report['layout_group_summary'], ensure_ascii=False, sort_keys=True)}"
         )
+    if report.get("overlay_readiness_summary"):
+        lines.append(
+            f"Overlay readiness: {json.dumps(report['overlay_readiness_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
+    if report.get("overlay_readiness_reason_summary"):
+        lines.append(
+            f"Overlay readiness reasons: {json.dumps(report['overlay_readiness_reason_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
     if report.get("page_zone_flag_summary"):
         lines.append(
             f"Page zone flags: {json.dumps(report['page_zone_flag_summary'], ensure_ascii=False, sort_keys=True)}"
@@ -1511,8 +1578,13 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             f"excluded_blocks={page.get('excluded_block_count', 0)} "
             f"page_zone_review_items={page.get('page_zone_review_item_count', 0)} "
             f"reading_flow_review_items={page.get('reading_flow_review_item_count', 0)} "
-            f"layout_groups={page.get('layout_group_count', 0)}"
+            f"layout_groups={page.get('layout_group_count', 0)} "
+            f"readiness={page.get('overlay_readiness', {}).get('status', 'unknown')}"
         )
+        if page.get("overlay_readiness", {}).get("reason_summary"):
+            lines.append(
+                f"  readiness reasons: {json.dumps(page['overlay_readiness']['reason_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
         if page.get("candidate_page_zone_summary"):
             lines.append(
                 f"  candidate zones: {json.dumps(page['candidate_page_zone_summary'], ensure_ascii=False, sort_keys=True)}"
