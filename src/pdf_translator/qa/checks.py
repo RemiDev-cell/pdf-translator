@@ -735,6 +735,32 @@ def _layout_group_review_items(groups: list[dict[str, Any]], page_number: int | 
     ]
 
 
+def _overlay_readiness_reason_severity(reason: str) -> str:
+    return {
+        "blocked_no_overlay_candidates": "blocked",
+        "review_candidate_content_role_in_footer_zone": "hard_review",
+        "review_candidate_content_role_in_header_zone": "hard_review",
+        "review_candidate_order_moves_up_page": "hard_review",
+        "review_structural_exclusion_in_body_zone": "hard_review",
+        "review_candidate_content_role_in_margin": "soft_review",
+        "review_large_vertical_gap_between_candidates": "soft_review",
+        "review_layout_group_ingredient_list_group": "soft_review",
+        "review_layout_group_instruction_group": "soft_review",
+        "review_layout_group_step_group": "soft_review",
+        "review_layout_group_table_group": "soft_review",
+    }.get(reason, "soft_review")
+
+
+def _readiness_status_from_severity(severity_summary: Counter[str]) -> str:
+    if severity_summary.get("blocked", 0) > 0:
+        return "blocked"
+    if severity_summary.get("hard_review", 0) > 0:
+        return "hard_review"
+    if severity_summary.get("soft_review", 0) > 0:
+        return "soft_review"
+    return "ready"
+
+
 def _build_overlay_readiness(
     candidates: list[dict[str, Any]],
     excluded_blocks: list[dict[str, Any]],
@@ -743,38 +769,43 @@ def _build_overlay_readiness(
     layout_group_review_items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     reason_summary: Counter[str] = Counter()
+    severity_summary: Counter[str] = Counter()
+
+    def add_reason(reason: str) -> None:
+        reason_summary[reason] += 1
+        severity_summary[_overlay_readiness_reason_severity(reason)] += 1
 
     if not candidates:
-        reason_summary["blocked_no_overlay_candidates"] += 1
+        add_reason("blocked_no_overlay_candidates")
 
     for item in page_zone_review_items:
-        reason_summary.update(item.get("page_zone_flags", []))
+        for reason in item.get("page_zone_flags", []):
+            add_reason(reason)
 
     for item in reading_flow_review_items:
-        reason_summary.update(item.get("flags", []))
+        for reason in item.get("flags", []):
+            add_reason(reason)
 
     complex_layout_review_count = 0
     for item in layout_group_review_items:
         group_type = item.get("group_type", "unknown_group")
         if group_type in {"ingredient_list_group", "instruction_group", "step_group", "table_group"}:
-            reason_summary[f"review_layout_group_{group_type}"] += 1
+            add_reason(f"review_layout_group_{group_type}")
             complex_layout_review_count += 1
 
-    if not candidates:
-        status = "blocked"
-    elif reason_summary:
-        status = "review"
-    else:
-        status = "ready"
+    status = _readiness_status_from_severity(severity_summary)
 
     return {
         "status": status,
         "reason_summary": dict(reason_summary),
+        "severity_summary": dict(severity_summary),
         "review_item_count": (
             len(page_zone_review_items)
             + len(reading_flow_review_items)
             + complex_layout_review_count
         ),
+        "soft_review_item_count": severity_summary.get("soft_review", 0),
+        "hard_review_item_count": severity_summary.get("hard_review", 0),
         "candidate_block_count": len(candidates),
         "excluded_block_count": len(excluded_blocks),
     }
@@ -1284,6 +1315,7 @@ def build_overlay_ready_report(
     overall_layout_groups: Counter[str] = Counter()
     overall_overlay_readiness_statuses: Counter[str] = Counter()
     overall_overlay_readiness_reasons: Counter[str] = Counter()
+    overall_overlay_readiness_severities: Counter[str] = Counter()
     overall_candidate_vertical_zones: Counter[str] = Counter()
     overall_candidate_horizontal_zones: Counter[str] = Counter()
     overall_excluded_vertical_zones: Counter[str] = Counter()
@@ -1434,6 +1466,7 @@ def build_overlay_ready_report(
         overall_layout_groups.update(layout_group_summary)
         overall_overlay_readiness_statuses.update([overlay_readiness["status"]])
         overall_overlay_readiness_reasons.update(overlay_readiness["reason_summary"])
+        overall_overlay_readiness_severities.update(overlay_readiness["severity_summary"])
         _merge_page_zone_field_summary(
             overall_candidate_page_zone_role_summary,
             candidate_page_zone_role_summary,
@@ -1491,6 +1524,7 @@ def build_overlay_ready_report(
         "layout_group_review_items": overall_layout_group_review_items,
         "overlay_readiness_summary": dict(overall_overlay_readiness_statuses),
         "overlay_readiness_reason_summary": dict(overall_overlay_readiness_reasons),
+        "overlay_readiness_severity_summary": dict(overall_overlay_readiness_severities),
         "page_zone_flag_summary": dict(overall_page_zone_flags),
         "page_zone_review_items": overall_page_zone_review_items,
         "candidate_page_zone_summary": {
@@ -1546,6 +1580,10 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         lines.append(
             f"Overlay readiness: {json.dumps(report['overlay_readiness_summary'], ensure_ascii=False, sort_keys=True)}"
         )
+    if report.get("overlay_readiness_severity_summary"):
+        lines.append(
+            f"Overlay readiness severities: {json.dumps(report['overlay_readiness_severity_summary'], ensure_ascii=False, sort_keys=True)}"
+        )
     if report.get("overlay_readiness_reason_summary"):
         lines.append(
             f"Overlay readiness reasons: {json.dumps(report['overlay_readiness_reason_summary'], ensure_ascii=False, sort_keys=True)}"
@@ -1584,6 +1622,10 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
         if page.get("overlay_readiness", {}).get("reason_summary"):
             lines.append(
                 f"  readiness reasons: {json.dumps(page['overlay_readiness']['reason_summary'], ensure_ascii=False, sort_keys=True)}"
+            )
+        if page.get("overlay_readiness", {}).get("severity_summary"):
+            lines.append(
+                f"  readiness severities: {json.dumps(page['overlay_readiness']['severity_summary'], ensure_ascii=False, sort_keys=True)}"
             )
         if page.get("candidate_page_zone_summary"):
             lines.append(
