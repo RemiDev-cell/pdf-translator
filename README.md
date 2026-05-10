@@ -21,7 +21,7 @@ What already works:
 - local translation through LM Studio
 - batch translation with validation and fallbacks
 - repeated block / slide chrome audit
-- overlay-ready and pre-overlay diagnostic artifacts
+- overlay-ready and pre-overlay diagnostic artifacts, including page zones, reading flow, layout groups, and overlay readiness severity
 - visual overlay previews on selected pages
 - stabilized native-text overlay prototype on representative real pages
 - experimental OCR branch for raster-image text, with debug crops, OCR review, mixed native/OCR translation preview, and diagnostic overlay output
@@ -206,7 +206,7 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 
 - `document_ir.json`
 - audit reports
-- overlay-ready reports
+- overlay-ready reports with candidate/exclusion reasons, geometry metrics, page-zone summaries, reading-flow diagnostics, layout groups, and readiness status
 - pre-overlay reports
 - overlay preview PDFs and PNGs
 - translation preview files
@@ -223,6 +223,7 @@ This means the project can now:
 
 - detect and filter slide chrome, repeated headers / footers, diagram noise, and page numbers
 - select overlay candidate regions from real PDFs
+- classify overlay readiness as `ready`, `soft_review`, `hard_review`, or `blocked` before recomposition
 - translate many short scientific labels through a controlled glossary
 - translate narrative text blocks with conservative fallbacks
 - generate replacement plans with risk levels
