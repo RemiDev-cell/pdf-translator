@@ -219,6 +219,11 @@ def test_run_native_overlay_preview_writes_artifact_chain(tmp_path: Path) -> Non
     assert paths["overlay_summary_text"].exists()
     assert result["replacement_plan"]["total_replacements"] >= 1
     assert result["overlay_summary"]["total_considered_replacements"] >= 1
+    assert result["replacement_plan"]["page_apply_policy_summary"] == {"apply_overlay": 1}
+    assert result["replacement_plan"]["pages"][0]["overlay_readiness_status"] == "ready"
+    assert result["replacement_plan"]["pages"][0]["page_apply_policy"] == "apply_overlay"
+    assert result["overlay_summary"]["page_apply_policy_summary"] == {"apply_overlay": 1}
+    assert result["overlay_summary"]["pages"][0]["page_apply_policy"] == "apply_overlay"
 
 
 def test_run_document_preview_routes_native_pages_to_native_overlay(tmp_path: Path) -> None:

@@ -452,6 +452,53 @@ def test_build_translation_preview_report_uses_scientific_glossary_before_model(
     assert report["pages"][0]["regions"][1]["translated_text"] == "P-type Si"
 
 
+def _single_region_translation_report(
+    page_number: int = 1,
+    translated_text: str = "Hello",
+    bbox=None,
+) -> dict:
+    return {
+        "selected_pages": [page_number],
+        "pages": [
+            {
+                "page_number": page_number,
+                "regions": [
+                    {
+                        "role": "content",
+                        "source_text": "Bonjour",
+                        "translated_text": translated_text,
+                        "source_color": 0,
+                        "source_color_mode": "uniform",
+                        "bbox": bbox or {"x0": 10, "y0": 20, "x1": 150, "y1": 80},
+                        "status": "translated",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _overlay_ready_report_for_status(status: str, page_number: int = 1) -> dict:
+    return {
+        "selected_pages": [page_number],
+        "pages": [
+            {
+                "page_number": page_number,
+                "overlay_readiness": {
+                    "status": status,
+                    "reason_summary": {"reason": 1} if status != "ready" else {},
+                    "severity_summary": {status: 1} if status != "ready" else {},
+                    "review_item_count": 1 if status != "ready" else 0,
+                    "soft_review_item_count": 1 if status == "soft_review" else 0,
+                    "hard_review_item_count": 1 if status == "hard_review" else 0,
+                    "candidate_block_count": 1,
+                    "excluded_block_count": 0,
+                },
+            }
+        ],
+    }
+
+
 def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> None:
     translation_report = {
         "selected_pages": [10],
@@ -498,10 +545,42 @@ def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> N
         "native_overlay_candidate": 1,
         "native_review_required": 1,
     }
-    assert "Page 10: replacements=2" in text
+    assert plan["page_apply_policy_summary"] == {"apply_overlay": 1}
+    assert plan["pages"][0]["overlay_readiness_status"] == "ready"
+    assert plan["pages"][0]["page_apply_policy"] == "apply_overlay"
+    assert "Page 10: replacements=2 policy=apply_overlay readiness=ready" in text
     assert "Apply strategies:" in text
+    assert "Page apply policies:" in text
     assert json_path.exists()
     assert text_path.exists()
+
+
+def test_build_replacement_plan_uses_soft_review_page_policy() -> None:
+    plan = build_replacement_plan(
+        _single_region_translation_report(page_number=3),
+        overlay_ready_report=_overlay_ready_report_for_status("soft_review", page_number=3),
+    )
+
+    assert plan["page_apply_policy_summary"] == {"apply_overlay_with_soft_review": 1}
+    assert plan["pages"][0]["overlay_readiness_status"] == "soft_review"
+    assert plan["pages"][0]["overlay_readiness_reason_summary"] == {"reason": 1}
+    assert plan["pages"][0]["overlay_readiness_severity_summary"] == {"soft_review": 1}
+    assert plan["pages"][0]["page_apply_policy"] == "apply_overlay_with_soft_review"
+
+
+def test_build_replacement_plan_uses_skip_policies_for_hard_review_and_blocked() -> None:
+    for status, expected_policy in (
+        ("hard_review", "skip_overlay_hard_review"),
+        ("blocked", "skip_overlay_blocked"),
+    ):
+        plan = build_replacement_plan(
+            _single_region_translation_report(),
+            overlay_ready_report=_overlay_ready_report_for_status(status),
+        )
+
+        assert plan["page_apply_policy_summary"] == {expected_policy: 1}
+        assert plan["pages"][0]["overlay_readiness_status"] == status
+        assert plan["pages"][0]["page_apply_policy"] == expected_policy
 
 
 def test_build_replacement_plan_allows_medium_risk_for_translated_slide_titles() -> None:
@@ -612,5 +691,97 @@ def test_render_overlay_prototype_skips_review_required_replacements(tmp_path) -
 
     assert pdf_path.exists()
     assert summary["total_applied_replacements"] == 1
+    assert summary["page_apply_policy_summary"] == {"apply_overlay": 1}
+    assert summary["total_skipped_replacements_due_to_page_policy"] == 0
     assert "Total applied replacements: 1" in text
+    assert "Page apply policies:" in text
     assert summary_path.exists()
+
+
+def test_render_overlay_prototype_applies_soft_review_pages(tmp_path) -> None:
+    source_pdf = tmp_path / "source-soft.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 40), "Bonjour", fontsize=12)
+    doc.save(source_pdf)
+    doc.close()
+
+    replacement_plan = build_replacement_plan(
+        _single_region_translation_report(),
+        overlay_ready_report=_overlay_ready_report_for_status("soft_review"),
+    )
+
+    _, summary = render_overlay_prototype(
+        pdf_path=source_pdf,
+        replacement_plan=replacement_plan,
+        output_dir=tmp_path,
+        stem="overlay_proto_soft",
+    )
+
+    assert summary["page_apply_policy_summary"] == {"apply_overlay_with_soft_review": 1}
+    assert summary["pages"][0]["page_apply_policy"] == "apply_overlay_with_soft_review"
+    assert summary["total_considered_replacements"] == 1
+    assert summary["total_applied_replacements"] == 1
+    assert summary["total_skipped_replacements_due_to_page_policy"] == 0
+
+
+def test_render_overlay_prototype_skips_hard_review_and_blocked_pages(tmp_path) -> None:
+    source_pdf = tmp_path / "source-skips.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 40), "Bonjour", fontsize=12)
+    doc.save(source_pdf)
+    doc.close()
+
+    for status, expected_policy in (
+        ("hard_review", "skip_overlay_hard_review"),
+        ("blocked", "skip_overlay_blocked"),
+    ):
+        replacement_plan = build_replacement_plan(
+            _single_region_translation_report(),
+            overlay_ready_report=_overlay_ready_report_for_status(status),
+        )
+
+        _, summary = render_overlay_prototype(
+            pdf_path=source_pdf,
+            replacement_plan=replacement_plan,
+            output_dir=tmp_path,
+            stem=f"overlay_proto_{status}",
+        )
+
+        assert summary["page_apply_policy_summary"] == {expected_policy: 1}
+        assert summary["pages"][0]["page_apply_policy"] == expected_policy
+        assert summary["total_considered_replacements"] == 1
+        assert summary["total_applied_replacements"] == 0
+        assert summary["total_skipped_replacements_due_to_page_policy"] == 1
+        assert summary["pages"][0]["skipped_replacements_due_to_page_policy"] == 1
+
+
+def test_render_overlay_prototype_keeps_fit_risk_gate_on_ready_pages(tmp_path) -> None:
+    source_pdf = tmp_path / "source-fit-risk.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 40), "Bonjour", fontsize=12)
+    doc.save(source_pdf)
+    doc.close()
+
+    replacement_plan = build_replacement_plan(
+        _single_region_translation_report(
+            translated_text="A very long translated phrase that cannot fit",
+            bbox={"x0": 10, "y0": 20, "x1": 16, "y1": 24},
+        ),
+        overlay_ready_report=_overlay_ready_report_for_status("ready"),
+    )
+
+    _, summary = render_overlay_prototype(
+        pdf_path=source_pdf,
+        replacement_plan=replacement_plan,
+        output_dir=tmp_path,
+        stem="overlay_proto_fit_risk",
+    )
+
+    assert replacement_plan["pages"][0]["page_apply_policy"] == "apply_overlay"
+    assert replacement_plan["pages"][0]["replacements"][0]["fit_risk"] == "high"
+    assert summary["total_considered_replacements"] == 1
+    assert summary["total_applied_replacements"] == 0
+    assert summary["total_skipped_replacements_due_to_page_policy"] == 0

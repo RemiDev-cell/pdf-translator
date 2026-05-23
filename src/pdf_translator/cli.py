@@ -275,7 +275,10 @@ def replacement_plan(
         return restore_text(translated_text, placeholders)
 
     translation_report = build_translation_preview_report(segments_report, _translate_region)
-    plan = build_replacement_plan(translation_report)
+    plan = build_replacement_plan(
+        translation_report,
+        overlay_ready_report=overlay_ready_report,
+    )
     stem = f"{pdf_path.stem}_replacement_plan"
     json_path, text_path = write_replacement_plan(plan, settings.debug_dir, stem)
     print(replacement_plan_to_text(plan))

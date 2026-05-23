@@ -188,7 +188,10 @@ def run_native_overlay_preview(
         f"{stem}_translation_preview",
     )
 
-    replacement_plan = build_replacement_plan(translation_preview_report)
+    replacement_plan = build_replacement_plan(
+        translation_preview_report,
+        overlay_ready_report=overlay_ready_report,
+    )
     replacement_plan_json, replacement_plan_text = write_replacement_plan(
         replacement_plan,
         output_dir,

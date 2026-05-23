@@ -805,16 +805,45 @@ def _native_apply_strategy(status: str, fit_risk: str, fit_diagnostics: dict[str
     return "native_overlay_candidate"
 
 
+def _page_apply_policy_for_readiness(status: str) -> str:
+    return {
+        "ready": "apply_overlay",
+        "soft_review": "apply_overlay_with_soft_review",
+        "hard_review": "skip_overlay_hard_review",
+        "blocked": "skip_overlay_blocked",
+    }.get(status, "apply_overlay")
+
+
+def _overlay_readiness_by_page(
+    overlay_ready_report: dict[str, Any] | None,
+) -> dict[int, dict[str, Any]]:
+    if overlay_ready_report is None:
+        return {}
+    return {
+        int(page.get("page_number")): page.get("overlay_readiness", {})
+        for page in overlay_ready_report.get("pages", [])
+        if page.get("page_number") is not None
+    }
+
+
 def build_replacement_plan(
     translation_preview_report: dict[str, Any],
+    overlay_ready_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     page_reports: list[dict[str, Any]] = []
     total_replacements = 0
     fit_risk_summary: Counter[str] = Counter()
     apply_strategy_summary: Counter[str] = Counter()
+    page_apply_policy_summary: Counter[str] = Counter()
+    readiness_by_page = _overlay_readiness_by_page(overlay_ready_report)
 
     for page in translation_preview_report.get("pages", []):
         replacements: list[dict[str, Any]] = []
+        page_number = int(page["page_number"])
+        readiness = readiness_by_page.get(page_number, {})
+        readiness_status = readiness.get("status", "ready")
+        page_apply_policy = _page_apply_policy_for_readiness(readiness_status)
+        page_apply_policy_summary[page_apply_policy] += 1
 
         for index, region in enumerate(page.get("regions", []), start=1):
             source_text = region["source_text"]
@@ -855,7 +884,11 @@ def build_replacement_plan(
         total_replacements += len(replacements)
         page_reports.append(
             {
-                "page_number": page["page_number"],
+                "page_number": page_number,
+                "overlay_readiness_status": readiness_status,
+                "overlay_readiness_reason_summary": readiness.get("reason_summary", {}),
+                "overlay_readiness_severity_summary": readiness.get("severity_summary", {}),
+                "page_apply_policy": page_apply_policy,
                 "replacement_count": len(replacements),
                 "replacements": replacements,
             }
@@ -867,6 +900,7 @@ def build_replacement_plan(
         "total_replacements": total_replacements,
         "fit_risk_summary": dict(fit_risk_summary),
         "apply_strategy_summary": dict(apply_strategy_summary),
+        "page_apply_policy_summary": dict(page_apply_policy_summary),
         "pages": page_reports,
     }
 
@@ -878,11 +912,14 @@ def replacement_plan_to_text(plan: dict[str, Any]) -> str:
         f"Total replacements: {plan['total_replacements']}",
         f"Fit risks: {json.dumps(plan.get('fit_risk_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"Apply strategies: {json.dumps(plan.get('apply_strategy_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"Page apply policies: {json.dumps(plan.get('page_apply_policy_summary', {}), ensure_ascii=False, sort_keys=True)}",
     ]
 
     for page in plan.get("pages", []):
         lines.append(
-            f"Page {page['page_number']}: replacements={page['replacement_count']}"
+            f"Page {page['page_number']}: replacements={page['replacement_count']} "
+            f"policy={page.get('page_apply_policy', 'apply_overlay')} "
+            f"readiness={page.get('overlay_readiness_status', 'ready')}"
         )
         for item in page.get("replacements", [])[:4]:
             preview = item["translated_text"].replace("\n", " | ").strip()[:160]
@@ -1293,6 +1330,8 @@ def render_overlay_prototype(
     summary_pages: list[dict[str, Any]] = []
     total_considered = 0
     total_applied = 0
+    total_skipped_due_to_page_policy = 0
+    page_apply_policy_summary: Counter[str] = Counter()
 
     for page_report in replacement_plan.get("pages", []):
         page_number = page_report["page_number"]
@@ -1301,11 +1340,18 @@ def render_overlay_prototype(
 
         applied = 0
         considered = 0
+        skipped_due_to_page_policy = 0
+        page_apply_policy = page_report.get("page_apply_policy", "apply_overlay")
+        page_apply_policy_summary[page_apply_policy] += 1
 
         for replacement in page_report.get("replacements", []):
             considered += 1
             total_considered += 1
 
+            if str(page_apply_policy).startswith("skip_overlay_"):
+                skipped_due_to_page_policy += 1
+                total_skipped_due_to_page_policy += 1
+                continue
             if replacement.get("status") not in allowed_statuses:
                 continue
             if replacement.get("apply_strategy") in {"native_review_required", "native_skipped"}:
@@ -1356,8 +1402,10 @@ def render_overlay_prototype(
         summary_pages.append(
             {
                 "page_number": page_number,
+                "page_apply_policy": page_apply_policy,
                 "considered_replacements": considered,
                 "applied_replacements": applied,
+                "skipped_replacements_due_to_page_policy": skipped_due_to_page_policy,
             }
         )
 
@@ -1371,6 +1419,8 @@ def render_overlay_prototype(
         "page_count": len(summary_pages),
         "total_considered_replacements": total_considered,
         "total_applied_replacements": total_applied,
+        "total_skipped_replacements_due_to_page_policy": total_skipped_due_to_page_policy,
+        "page_apply_policy_summary": dict(page_apply_policy_summary),
         "pages": summary_pages,
         "allowed_fit_risks": list(allowed_fit_risks),
         "allowed_statuses": list(allowed_statuses),
@@ -1387,11 +1437,18 @@ def overlay_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         f"Allowed fit risks: {summary['allowed_fit_risks']}",
         f"Total considered replacements: {summary['total_considered_replacements']}",
         f"Total applied replacements: {summary['total_applied_replacements']}",
+        f"Total skipped by page policy: {summary.get('total_skipped_replacements_due_to_page_policy', 0)}",
     ]
+    if summary.get("page_apply_policy_summary"):
+        lines.append(
+            f"Page apply policies: {json.dumps(summary.get('page_apply_policy_summary', {}), ensure_ascii=False, sort_keys=True)}"
+        )
 
     for page in summary.get("pages", []):
         lines.append(
-            f"Page {page['page_number']}: applied={page['applied_replacements']} / considered={page['considered_replacements']}"
+            f"Page {page['page_number']}: policy={page.get('page_apply_policy', 'apply_overlay')} "
+            f"applied={page['applied_replacements']} / considered={page['considered_replacements']} "
+            f"skipped_by_policy={page.get('skipped_replacements_due_to_page_policy', 0)}"
         )
 
     return "\n".join(lines)

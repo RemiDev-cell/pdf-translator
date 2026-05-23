@@ -210,6 +210,7 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 - pre-overlay reports
 - overlay preview PDFs and PNGs
 - translation preview files
+- native replacement plans and overlay summaries with per-page apply policies derived from overlay readiness
 - OCR candidate reports, crops, manifests, and review reports
 - mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
 
@@ -228,6 +229,15 @@ This means the project can now:
 - translate narrative text blocks with conservative fallbacks
 - generate replacement plans with risk levels
 - render overlay prototypes directly onto the original PDF pages
+
+Overlay readiness now gates native overlay application:
+
+- `ready` pages use `apply_overlay`
+- `soft_review` pages use `apply_overlay_with_soft_review` and still render for visual validation
+- `hard_review` pages use `skip_overlay_hard_review`
+- `blocked` pages use `skip_overlay_blocked`
+
+Skipped pages still produce the diagnostic chain, but their replacements are counted as considered rather than applied.
 
 Representative pages already validated on the real PowerPoint-exported scientific deck:
 
