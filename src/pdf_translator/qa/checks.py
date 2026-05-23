@@ -361,6 +361,10 @@ def _page_zone_review_item(
     }
     if item_type == "candidate":
         review_item["selection_reason"] = item.get("selection_reason", "selected_as_unknown")
+        layout_group = item.get("layout_group", {})
+        if layout_group.get("group_type") != "isolated_group":
+            review_item["layout_group_id"] = layout_group.get("group_id")
+            review_item["layout_group_type"] = layout_group.get("group_type")
     else:
         review_item["exclusion_reason"] = item.get("exclusion_reason", "excluded_as_unknown")
 
@@ -494,7 +498,7 @@ def _reading_flow_review_item(
     if not flags:
         return None
 
-    return {
+    review_item = {
         "page_number": page_number,
         "block_index": candidate.get("block_index"),
         "role": candidate.get("role"),
@@ -508,6 +512,12 @@ def _reading_flow_review_item(
         "line_count": candidate.get("line_count", 0),
         "text_preview": candidate.get("text", "").replace("\n", " | ").strip()[:120],
     }
+    layout_group = candidate.get("layout_group", {})
+    if layout_group.get("group_type") != "isolated_group":
+        review_item["layout_group_id"] = layout_group.get("group_id")
+        review_item["layout_group_type"] = layout_group.get("group_type")
+
+    return review_item
 
 
 def _reading_flow_review_items(
@@ -751,6 +761,30 @@ def _overlay_readiness_reason_severity(reason: str) -> str:
     }.get(reason, "soft_review")
 
 
+def _overlay_readiness_item_reason_severity(reason: str, item: dict[str, Any]) -> str:
+    severity = _overlay_readiness_reason_severity(reason)
+    if severity != "hard_review":
+        return severity
+
+    if reason not in {
+        "review_candidate_content_role_in_footer_zone",
+        "review_candidate_content_role_in_header_zone",
+        "review_candidate_order_moves_up_page",
+    }:
+        return severity
+
+    if item.get("layout_group_type") in {
+        "heading_group",
+        "ingredient_list_group",
+        "instruction_group",
+        "step_group",
+        "table_group",
+    }:
+        return "soft_review"
+
+    return severity
+
+
 def _readiness_status_from_severity(severity_summary: Counter[str]) -> str:
     if severity_summary.get("blocked", 0) > 0:
         return "blocked"
@@ -771,20 +805,24 @@ def _build_overlay_readiness(
     reason_summary: Counter[str] = Counter()
     severity_summary: Counter[str] = Counter()
 
-    def add_reason(reason: str) -> None:
+    def add_reason(reason: str, item: dict[str, Any] | None = None) -> None:
         reason_summary[reason] += 1
-        severity_summary[_overlay_readiness_reason_severity(reason)] += 1
+        if item is None:
+            severity = _overlay_readiness_reason_severity(reason)
+        else:
+            severity = _overlay_readiness_item_reason_severity(reason, item)
+        severity_summary[severity] += 1
 
     if not candidates:
         add_reason("blocked_no_overlay_candidates")
 
     for item in page_zone_review_items:
         for reason in item.get("page_zone_flags", []):
-            add_reason(reason)
+            add_reason(reason, item)
 
     for item in reading_flow_review_items:
         for reason in item.get("flags", []):
-            add_reason(reason)
+            add_reason(reason, item)
 
     complex_layout_review_count = 0
     for item in layout_group_review_items:
@@ -1213,6 +1251,13 @@ def write_audit_report(
     )
 
     return json_path, text_path
+
+
+def _review_item_layout_group_text(review_item: dict[str, Any]) -> str:
+    group_type = review_item.get("layout_group_type")
+    if not group_type:
+        return ""
+    return f" group={group_type}:{review_item.get('layout_group_id')}"
 
 
 def _overlay_selection_reason(role: str) -> str:
@@ -1663,7 +1708,7 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             lines.append(
                 f"  reading review block {review_item.get('block_index')}: "
                 f"flow={review_item.get('classification', 'unknown_flow')} "
-                f"flags={flags} text={preview}"
+                f"flags={flags}{_review_item_layout_group_text(review_item)} text={preview}"
             )
         if page.get("candidate_page_zone_role_summary"):
             lines.append(
@@ -1678,7 +1723,7 @@ def overlay_ready_report_to_text(report: dict[str, Any]) -> str:
             flags = ",".join(review_item.get("page_zone_flags", [])) or "none"
             lines.append(
                 f"  review {review_item.get('item_type', 'item')} block {review_item.get('block_index')}: "
-                f"flags={flags} text={preview}"
+                f"flags={flags}{_review_item_layout_group_text(review_item)} text={preview}"
             )
         for candidate in page.get("candidates", [])[:3]:
             preview = candidate["text"].replace("\n", " | ").strip()[:180]

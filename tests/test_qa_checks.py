@@ -834,6 +834,175 @@ def test_build_overlay_ready_report_marks_simple_body_page_ready() -> None:
     }
 
 
+def test_build_overlay_ready_report_downgrades_heading_group_in_header_zone() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 240,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "title",
+                        "bbox": {"x0": 40, "y0": 8, "x1": 200, "y1": 20},
+                        "text": "Recipe Title",
+                        "lines": [{"text": "Recipe Title", "bbox": {"x0": 40, "y0": 8, "x1": 200, "y1": 20}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 24, "x1": 200, "y1": 36},
+                        "text": "Short subtitle",
+                        "lines": [{"text": "Short subtitle", "bbox": {"x0": 40, "y0": 24, "x1": 200, "y1": 36}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    review_item = report["page_zone_review_items"][0]
+
+    assert review_item["layout_group_type"] == "heading_group"
+    assert review_item["layout_group_id"] == "P1G0"
+    assert report["overlay_readiness_summary"] == {"soft_review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_candidate_content_role_in_header_zone": 1,
+    }
+    assert report["overlay_readiness_severity_summary"] == {"soft_review": 1}
+    assert report["pages"][0]["overlay_readiness"]["hard_review_item_count"] == 0
+
+
+def test_build_overlay_ready_report_downgrades_ingredient_group_in_footer_zone() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 240,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "short_label",
+                        "bbox": {"x0": 40, "y0": 150, "x1": 140, "y1": 162},
+                        "text": "Ingredients",
+                        "lines": [{"text": "Ingredients", "bbox": {"x0": 40, "y0": 150, "x1": 140, "y1": 162}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "list_item",
+                        "bbox": {"x0": 40, "y0": 172, "x1": 140, "y1": 184},
+                        "text": "3 oeufs",
+                        "lines": [{"text": "3 oeufs", "bbox": {"x0": 40, "y0": 172, "x1": 140, "y1": 184}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    review_item = report["page_zone_review_items"][0]
+
+    assert review_item["layout_group_type"] == "ingredient_list_group"
+    assert report["overlay_readiness_summary"] == {"soft_review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_candidate_content_role_in_footer_zone": 1,
+        "review_layout_group_ingredient_list_group": 1,
+    }
+    assert report["overlay_readiness_severity_summary"] == {"soft_review": 2}
+    assert report["pages"][0]["overlay_readiness"]["hard_review_item_count"] == 0
+
+
+def test_build_overlay_ready_report_downgrades_order_move_inside_structured_group() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 240,
+                "height": 300,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "list_item",
+                        "bbox": {"x0": 40, "y0": 220, "x1": 140, "y1": 232},
+                        "text": "3 oeufs",
+                        "lines": [{"text": "3 oeufs", "bbox": {"x0": 40, "y0": 220, "x1": 140, "y1": 232}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "short_label",
+                        "bbox": {"x0": 40, "y0": 80, "x1": 140, "y1": 92},
+                        "text": "Ingredients",
+                        "lines": [{"text": "Ingredients", "bbox": {"x0": 40, "y0": 80, "x1": 140, "y1": 92}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+    review_item = report["reading_flow_review_items"][0]
+
+    assert review_item["layout_group_type"] == "ingredient_list_group"
+    assert review_item["layout_group_id"] == "P1G0"
+    assert report["overlay_readiness_summary"] == {"soft_review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_candidate_order_moves_up_page": 1,
+        "review_layout_group_ingredient_list_group": 1,
+    }
+    assert report["overlay_readiness_severity_summary"] == {"soft_review": 2}
+    assert report["pages"][0]["overlay_readiness"]["hard_review_item_count"] == 0
+
+
+def test_build_overlay_ready_report_keeps_body_zone_structural_exclusion_hard_with_context() -> None:
+    document_ir = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 240,
+                "height": 200,
+                "text_blocks": [
+                    {
+                        "block_index": 1,
+                        "role": "title",
+                        "bbox": {"x0": 40, "y0": 8, "x1": 200, "y1": 20},
+                        "text": "Recipe Title",
+                        "lines": [{"text": "Recipe Title", "bbox": {"x0": 40, "y0": 8, "x1": 200, "y1": 20}}],
+                    },
+                    {
+                        "block_index": 2,
+                        "role": "content",
+                        "bbox": {"x0": 40, "y0": 24, "x1": 200, "y1": 36},
+                        "text": "Short subtitle",
+                        "lines": [{"text": "Short subtitle", "bbox": {"x0": 40, "y0": 24, "x1": 200, "y1": 36}}],
+                    },
+                    {
+                        "block_index": 3,
+                        "role": "header",
+                        "bbox": {"x0": 40, "y0": 90, "x1": 200, "y1": 108},
+                        "text": "misplaced header",
+                        "lines": [{"text": "misplaced header", "bbox": {"x0": 40, "y0": 90, "x1": 200, "y1": 108}}],
+                    },
+                ],
+            }
+        ]
+    }
+
+    report = build_overlay_ready_report(document_ir, [1])
+
+    assert report["overlay_readiness_summary"] == {"hard_review": 1}
+    assert report["overlay_readiness_reason_summary"] == {
+        "review_candidate_content_role_in_header_zone": 1,
+        "review_structural_exclusion_in_body_zone": 1,
+    }
+    assert report["overlay_readiness_severity_summary"] == {
+        "hard_review": 1,
+        "soft_review": 1,
+    }
+    assert report["pages"][0]["overlay_readiness"]["hard_review_item_count"] == 1
+
+
 def test_build_overlay_ready_report_marks_layout_group_for_review() -> None:
     document_ir = {
         "pages": [
