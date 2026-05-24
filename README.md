@@ -227,6 +227,7 @@ This means the project can now:
 - classify overlay readiness as `ready`, `soft_review`, `hard_review`, or `blocked` before recomposition
 - translate many short scientific labels through a controlled glossary
 - translate narrative text blocks with conservative fallbacks
+- translate small structural labels through deterministic native-preview fallbacks
 - generate replacement plans with risk levels
 - render overlay prototypes directly onto the original PDF pages
 
@@ -239,6 +240,7 @@ Overlay readiness now gates native overlay application:
 
 Skipped pages still produce the diagnostic chain, but their replacements are counted as considered rather than applied.
 Native overlay summaries also explain each considered replacement as `applied`, `skipped_page_policy`, `skipped_status`, `skipped_apply_strategy`, or `skipped_fit_risk`.
+Translation preview regions now include `translation_method` and `translation_attempt_count`, so `skipped_status` can be traced back to `model`, `glossary`, `outline_fallback`, `structural_fallback`, `timeout`, or deliberate `skipped` behavior.
 
 Representative pages already validated on the real PowerPoint-exported scientific deck:
 

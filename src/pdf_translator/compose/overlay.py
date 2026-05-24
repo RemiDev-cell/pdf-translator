@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,110 @@ from pdf_translator.translate.glossary import (
 
 PLACEHOLDER_RE = re.compile(r"\[\[[A-Z0-9_]+\]\]")
 CLAUSE_SPLIT_RE = re.compile(r"(\s*[:;,]\s*)")
+STEP_LABEL_RE = re.compile(r"^etape\s+(\d+)$")
+SERVINGS_LABEL_RE = re.compile(r"^pour\s+(\d+)\s+personnes?$")
+QUANTITY_WITH_UNIT_RE = re.compile(r"^(\d+(?:[,.]\d+)?)\s*([a-z ]+?)\s+(?:de|d')\s*(.+)$")
+QUANTITY_DIRECT_RE = re.compile(r"^(\d+(?:[,.]\d+)?)\s+(.+)$")
+
+STRUCTURAL_LABEL_TRANSLATIONS = {
+    "ingredients": "Ingredients",
+}
+
+SIMPLE_UNIT_TRANSLATIONS = {
+    "g": "g",
+    "kg": "kg",
+    "mg": "mg",
+    "ml": "ml",
+    "cl": "cl",
+    "l": "l",
+    "tasse": "cup",
+    "tasses": "cups",
+    "sachet": "packet",
+    "sachets": "packets",
+    "cuillere a cafe": "tsp",
+    "cuilleres a cafe": "tsp",
+    "cuillere a soupe": "tbsp",
+    "cuilleres a soupe": "tbsp",
+}
+
+SIMPLE_INGREDIENT_TRANSLATIONS = {
+    "oeuf": "egg",
+    "oeufs": "eggs",
+    "sucre": "sugar",
+    "sucre roux": "brown sugar",
+    "mascarpone": "mascarpone",
+    "biscuits": "biscuits",
+    "biscuits a la cuillere": "ladyfingers",
+    "cafe": "coffee",
+    "cafe fort": "strong coffee",
+    "sucre vanille": "vanilla sugar",
+    "cacao": "cocoa",
+    "cacao amer": "unsweetened cocoa",
+}
+
+
+def _normalized_structural_key(text: str) -> str:
+    folded = text.strip().replace("’", "'").replace("œ", "oe").replace("Œ", "oe")
+    folded = unicodedata.normalize("NFKD", folded)
+    folded = "".join(char for char in folded if not unicodedata.combining(char))
+    folded = folded.lower()
+    folded = re.sub(r"\s+", " ", folded)
+    return folded.strip()
+
+
+def _translate_simple_quantity(key: str) -> str | None:
+    match = QUANTITY_WITH_UNIT_RE.fullmatch(key)
+    if match is not None:
+        amount, unit_source, item_source = match.groups()
+        unit = SIMPLE_UNIT_TRANSLATIONS.get(unit_source.strip())
+        item = SIMPLE_INGREDIENT_TRANSLATIONS.get(item_source.strip())
+        if unit is not None and item is not None:
+            return f"{amount} {unit} {item}"
+
+    match = QUANTITY_DIRECT_RE.fullmatch(key)
+    if match is not None:
+        amount, item_source = match.groups()
+        item = SIMPLE_INGREDIENT_TRANSLATIONS.get(item_source.strip())
+        if item is not None:
+            return f"{amount} {item}"
+
+    return None
+
+
+def _translate_single_structural_text(text: str) -> str | None:
+    key = _normalized_structural_key(text)
+    if not key:
+        return None
+
+    step_match = STEP_LABEL_RE.fullmatch(key)
+    if step_match is not None:
+        return f"step {step_match.group(1)}"
+
+    servings_match = SERVINGS_LABEL_RE.fullmatch(key)
+    if servings_match is not None:
+        return f"For {servings_match.group(1)} people"
+
+    label_translation = STRUCTURAL_LABEL_TRANSLATIONS.get(key)
+    if label_translation is not None:
+        return label_translation
+
+    return _translate_simple_quantity(key)
+
+
+def _translate_structural_text(text: str) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    if len(lines) == 1:
+        return _translate_single_structural_text(lines[0])
+
+    translated_lines: list[str] = []
+    for line in lines:
+        translated_line = _translate_single_structural_text(line)
+        if translated_line is None:
+            return None
+        translated_lines.append(translated_line)
+    return "\n".join(translated_lines)
 
 
 def build_pre_overlay_report(overlay_ready_report: dict[str, Any]) -> dict[str, Any]:
@@ -457,20 +562,26 @@ def _translate_region_with_timeout_fallback(
     source_text: str,
     translate_text_fn,
     role: str = "content",
-) -> tuple[str, str]:
+) -> tuple[str, str, str, int]:
     if role == "slide_title":
-        return translate_slide_title(source_text), "translated"
+        return translate_slide_title(source_text), "translated", "glossary", 0
 
     outline_translation = translate_outline_sentence(source_text)
     if outline_translation is not None:
-        return outline_translation, "translated"
+        return outline_translation, "translated", "outline_fallback", 0
 
     label_translation = translate_scientific_label(source_text)
     if label_translation is not None:
-        return label_translation, "translated"
+        return label_translation, "translated", "glossary", 0
 
+    structural_translation = _translate_structural_text(source_text)
+    if structural_translation is not None:
+        return structural_translation, "translated", "structural_fallback", 0
+
+    translation_attempt_count = 0
     try:
-        return translate_text_fn(source_text), "translated"
+        translation_attempt_count += 1
+        return translate_text_fn(source_text), "translated", "model", translation_attempt_count
     except requests.exceptions.Timeout:
         source_lines = [line.strip() for line in source_text.splitlines() if line.strip()]
         if len(source_lines) == 1:
@@ -482,23 +593,42 @@ def _translate_region_with_timeout_fallback(
                         translated_parts.append(part)
                         continue
                     try:
+                        translation_attempt_count += 1
                         translated_parts.append(translate_text_fn(part.strip()))
                     except requests.exceptions.Timeout:
                         break
                 else:
-                    return "".join(translated_parts), "translated"
+                    return "".join(translated_parts), "translated", "model", translation_attempt_count
 
         if len(source_lines) <= 1:
-            return f"[TIMEOUT] {source_text.replace(chr(10), ' | ')}", "timeout"
+            return (
+                f"[TIMEOUT] {source_text.replace(chr(10), ' | ')}",
+                "timeout",
+                "timeout",
+                translation_attempt_count,
+            )
 
         translated_lines: list[str] = []
+        used_model_fallback = False
         for line in source_lines:
+            structural_line = _translate_structural_text(line)
+            if structural_line is not None:
+                translated_lines.append(structural_line)
+                continue
             try:
+                translation_attempt_count += 1
                 translated_lines.append(translate_text_fn(line))
+                used_model_fallback = True
             except requests.exceptions.Timeout:
-                return f"[TIMEOUT] {source_text.replace(chr(10), ' | ')}", "timeout"
+                return (
+                    f"[TIMEOUT] {source_text.replace(chr(10), ' | ')}",
+                    "timeout",
+                    "timeout",
+                    translation_attempt_count,
+                )
 
-        return "\n".join(translated_lines), "translated"
+        method = "model" if used_model_fallback else "structural_fallback"
+        return "\n".join(translated_lines), "translated", method, translation_attempt_count
 
 
 def _sanitize_translated_text(source_text: str, translated_text: str) -> str:
@@ -540,6 +670,8 @@ def build_translation_preview_report(
             if not region.get("translate", True):
                 translated_text = source_text
                 status = "skipped"
+                translation_method = "skipped"
+                translation_attempt_count = 0
                 translated_lines = [
                     {
                         "text": line["text"],
@@ -553,17 +685,24 @@ def build_translation_preview_report(
                 translated_text = translate_slide_title(source_text)
                 translated_text = _sanitize_translated_text(source_text, translated_text)
                 status = "translated"
+                translation_method = "glossary"
+                translation_attempt_count = 0
                 translated_lines = None
             elif region.get("role") == "diagram_label":
-                translated_text = translate_scientific_label(source_text) or source_text
+                label_translation = translate_scientific_label(source_text)
+                translated_text = label_translation or source_text
                 translated_text = _sanitize_translated_text(source_text, translated_text)
                 status = "translated" if translated_text != source_text else "skipped"
+                translation_method = "glossary" if label_translation is not None else "skipped"
+                translation_attempt_count = 0
                 translated_lines = None
             else:
-                translated_text, status = _translate_region_with_timeout_fallback(
-                    source_text,
-                    translate_text_fn,
-                    region.get("role", "content"),
+                translated_text, status, translation_method, translation_attempt_count = (
+                    _translate_region_with_timeout_fallback(
+                        source_text,
+                        translate_text_fn,
+                        region.get("role", "content"),
+                    )
                 )
                 translated_text = _sanitize_translated_text(source_text, translated_text)
                 translated_lines = None
@@ -616,6 +755,8 @@ def build_translation_preview_report(
                     "source_color_mode": region.get("source_color_mode", "unknown"),
                     "translated_lines": translated_lines,
                     "status": status,
+                    "translation_method": translation_method,
+                    "translation_attempt_count": translation_attempt_count,
                 }
             )
 
@@ -629,7 +770,11 @@ def translation_preview_report_to_text(report: dict[str, Any]) -> str:
     for page in report.get("pages", []):
         lines.append(f"PAGE {page['page_number']}")
         for index, region in enumerate(page.get("regions", []), start=1):
-            lines.append(f"Region {index} [{region['status']}]")
+            lines.append(
+                f"Region {index} [{region['status']}] "
+                f"method={region.get('translation_method', 'unknown')} "
+                f"attempts={region.get('translation_attempt_count', 0)}"
+            )
             lines.append("FR: " + region["source_text"].replace("\n", " | "))
             lines.append("EN: " + region["translated_text"].replace("\n", " | "))
             lines.append("")
@@ -872,6 +1017,8 @@ def build_replacement_plan(
                     "source_color_mode": region.get("source_color_mode", "unknown"),
                     "translated_lines": region.get("translated_lines"),
                     "status": status,
+                    "translation_method": region.get("translation_method", "unknown"),
+                    "translation_attempt_count": region.get("translation_attempt_count", 0),
                     "source_length": source_len,
                     "translated_length": translated_len,
                     "overflow_ratio": round(overflow_ratio, 2),
@@ -927,6 +1074,8 @@ def replacement_plan_to_text(plan: dict[str, Any]) -> str:
             lines.append(
                 f"  region {item['replacement_index']} [{item['status']}] risk={item['fit_risk']} "
                 f"strategy={item.get('apply_strategy', 'unknown')} ratio={item['overflow_ratio']} "
+                f"method={item.get('translation_method', 'unknown')} "
+                f"attempts={item.get('translation_attempt_count', 0)} "
                 f"flags={flags} bbox={item['bbox']} text={preview}"
             )
 
@@ -1342,6 +1491,8 @@ def _native_render_review_item(
         "status": replacement.get("status", "unknown"),
         "fit_risk": replacement.get("fit_risk", "unknown"),
         "apply_strategy": replacement.get("apply_strategy", "native_overlay_candidate"),
+        "translation_method": replacement.get("translation_method", "unknown"),
+        "translation_attempt_count": replacement.get("translation_attempt_count", 0),
         "render_decision": render_decision,
         "text_preview": replacement.get("translated_text", "").replace("\n", " | ").strip()[:160],
     }
@@ -1511,7 +1662,9 @@ def overlay_prototype_summary_to_text(summary: dict[str, Any]) -> str:
                 f"decision={review_item.get('render_decision')} "
                 f"status={review_item.get('status')} "
                 f"risk={review_item.get('fit_risk')} "
-                f"strategy={review_item.get('apply_strategy')} text={preview}"
+                f"strategy={review_item.get('apply_strategy')} "
+                f"method={review_item.get('translation_method', 'unknown')} "
+                f"attempts={review_item.get('translation_attempt_count', 0)} text={preview}"
             )
 
     return "\n".join(lines)

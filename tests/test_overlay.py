@@ -203,7 +203,11 @@ def test_build_translation_preview_report_marks_statuses_and_writes_files(tmp_pa
 
     assert report["pages"][0]["regions"][0]["status"] == "translated"
     assert report["pages"][0]["regions"][1]["status"] == "skipped"
+    assert report["pages"][0]["regions"][0]["translation_method"] == "model"
+    assert report["pages"][0]["regions"][0]["translation_attempt_count"] == 1
+    assert report["pages"][0]["regions"][1]["translation_method"] == "skipped"
     assert "Region 1 [translated]" in text
+    assert "method=model attempts=1" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -450,6 +454,88 @@ def test_build_translation_preview_report_uses_scientific_glossary_before_model(
 
     assert report["pages"][0]["regions"][0]["translated_text"] == "Homojunction"
     assert report["pages"][0]["regions"][1]["translated_text"] == "P-type Si"
+    assert report["pages"][0]["regions"][0]["translation_method"] == "glossary"
+    assert report["pages"][0]["regions"][0]["translation_attempt_count"] == 0
+
+
+def test_build_translation_preview_report_uses_structural_step_fallback_before_model() -> None:
+    segments_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "regions": [
+                    {"source_text": "étape 1", "role": "content", "bbox": {}, "translate": True},
+                ],
+            }
+        ],
+    }
+
+    def should_not_run(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    report = build_translation_preview_report(segments_report, should_not_run)
+    region = report["pages"][0]["regions"][0]
+
+    assert region["translated_text"] == "step 1"
+    assert region["status"] == "translated"
+    assert region["translation_method"] == "structural_fallback"
+    assert region["translation_attempt_count"] == 0
+
+
+def test_build_translation_preview_report_uses_structural_label_fallback_before_model() -> None:
+    segments_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "regions": [
+                    {"source_text": "Ingrédients", "role": "content", "bbox": {}, "translate": True},
+                ],
+            }
+        ],
+    }
+
+    def should_not_run(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    report = build_translation_preview_report(segments_report, should_not_run)
+    region = report["pages"][0]["regions"][0]
+
+    assert region["translated_text"] == "Ingredients"
+    assert region["status"] == "translated"
+    assert region["translation_method"] == "structural_fallback"
+    assert region["translation_attempt_count"] == 0
+
+
+def test_build_translation_preview_report_keeps_long_unhandled_timeout_visible() -> None:
+    segments_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "regions": [
+                    {
+                        "source_text": "Ce paragraphe long demande une vraie traduction contextuelle sans raccourci fiable.",
+                        "role": "content",
+                        "bbox": {},
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    def always_timeout(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    report = build_translation_preview_report(segments_report, always_timeout)
+    region = report["pages"][0]["regions"][0]
+
+    assert region["status"] == "timeout"
+    assert region["translation_method"] == "timeout"
+    assert region["translation_attempt_count"] == 1
+    assert region["translated_text"].startswith("[TIMEOUT]")
 
 
 def _single_region_translation_report(
@@ -514,6 +600,8 @@ def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> N
                         "source_color_mode": "uniform",
                         "bbox": {"x0": 10, "y0": 20, "x1": 130, "y1": 44},
                         "status": "translated",
+                        "translation_method": "model",
+                        "translation_attempt_count": 1,
                     },
                     {
                         "role": "slide_title",
@@ -537,6 +625,8 @@ def test_build_replacement_plan_assigns_fit_risk_and_writes_files(tmp_path) -> N
     assert plan["pages"][0]["replacements"][0]["fit_risk"] == "low"
     assert plan["pages"][0]["replacements"][0]["source_color"] == 0
     assert plan["pages"][0]["replacements"][0]["translated_lines"] is None
+    assert plan["pages"][0]["replacements"][0]["translation_method"] == "model"
+    assert plan["pages"][0]["replacements"][0]["translation_attempt_count"] == 1
     assert plan["pages"][0]["replacements"][0]["fit_diagnostics"]["flags"] == []
     assert plan["pages"][0]["replacements"][0]["apply_strategy"] == "native_overlay_candidate"
     assert plan["pages"][0]["replacements"][1]["fit_risk"] == "high"
@@ -734,6 +824,8 @@ def test_render_overlay_prototype_explains_status_skips(tmp_path) -> None:
                         "bbox": {"x0": 10, "y0": 20, "x1": 150, "y1": 80},
                         "translated_text": "[TIMEOUT] Bonjour",
                         "status": "timeout",
+                        "translation_method": "timeout",
+                        "translation_attempt_count": 1,
                         "fit_risk": "low",
                         "apply_strategy": "native_overlay_candidate",
                     },
@@ -758,9 +850,62 @@ def test_render_overlay_prototype_explains_status_skips(tmp_path) -> None:
         "status": "timeout",
         "fit_risk": "low",
         "apply_strategy": "native_overlay_candidate",
+        "translation_method": "timeout",
+        "translation_attempt_count": 1,
         "render_decision": "skipped_status",
         "text_preview": "[TIMEOUT] Bonjour",
     }
+
+
+def test_render_overlay_prototype_applies_structural_fallback_replacements(tmp_path) -> None:
+    source_pdf = tmp_path / "source-structural.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 40), "étape 1", fontsize=12)
+    doc.save(source_pdf)
+    doc.close()
+
+    segments_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "regions": [
+                    {
+                        "source_text": "étape 1",
+                        "role": "content",
+                        "bbox": {"x0": 10, "y0": 20, "x1": 150, "y1": 80},
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    def always_timeout(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    translation_report = build_translation_preview_report(segments_report, always_timeout)
+    replacement_plan = build_replacement_plan(translation_report)
+
+    _, summary = render_overlay_prototype(
+        pdf_path=source_pdf,
+        replacement_plan=replacement_plan,
+        output_dir=tmp_path,
+        stem="overlay_proto_structural",
+    )
+
+    replacement = replacement_plan["pages"][0]["replacements"][0]
+    review_item = summary["pages"][0]["render_review_items"][0]
+
+    assert replacement["status"] == "translated"
+    assert replacement["translated_text"] == "step 1"
+    assert replacement["translation_method"] == "structural_fallback"
+    assert summary["total_applied_replacements"] == 1
+    assert summary["total_skipped_replacements"] == 0
+    assert summary["render_decision_summary"] == {"applied": 1}
+    assert review_item["render_decision"] == "applied"
+    assert review_item["translation_method"] == "structural_fallback"
 
 
 def test_render_overlay_prototype_applies_soft_review_pages(tmp_path) -> None:
