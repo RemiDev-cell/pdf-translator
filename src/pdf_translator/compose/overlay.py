@@ -1315,6 +1315,38 @@ def _overlay_style_for_replacement(
     }
 
 
+def _native_render_decision(
+    replacement: dict[str, Any],
+    page_apply_policy: str,
+    allowed_fit_risks: tuple[str, ...],
+    allowed_statuses: tuple[str, ...],
+) -> str:
+    if str(page_apply_policy).startswith("skip_overlay_"):
+        return "skipped_page_policy"
+    if replacement.get("status") not in allowed_statuses:
+        return "skipped_status"
+    if replacement.get("apply_strategy") in {"native_review_required", "native_skipped"}:
+        return "skipped_apply_strategy"
+    if replacement.get("fit_risk") not in allowed_fit_risks:
+        return "skipped_fit_risk"
+    return "applied"
+
+
+def _native_render_review_item(
+    replacement: dict[str, Any],
+    render_decision: str,
+) -> dict[str, Any]:
+    return {
+        "replacement_index": replacement.get("replacement_index"),
+        "role": replacement.get("role", "content"),
+        "status": replacement.get("status", "unknown"),
+        "fit_risk": replacement.get("fit_risk", "unknown"),
+        "apply_strategy": replacement.get("apply_strategy", "native_overlay_candidate"),
+        "render_decision": render_decision,
+        "text_preview": replacement.get("translated_text", "").replace("\n", " | ").strip()[:160],
+    }
+
+
 def render_overlay_prototype(
     pdf_path: Path,
     replacement_plan: dict[str, Any],
@@ -1330,8 +1362,10 @@ def render_overlay_prototype(
     summary_pages: list[dict[str, Any]] = []
     total_considered = 0
     total_applied = 0
+    total_skipped = 0
     total_skipped_due_to_page_policy = 0
     page_apply_policy_summary: Counter[str] = Counter()
+    render_decision_summary: Counter[str] = Counter()
 
     for page_report in replacement_plan.get("pages", []):
         page_number = page_report["page_number"]
@@ -1343,20 +1377,28 @@ def render_overlay_prototype(
         skipped_due_to_page_policy = 0
         page_apply_policy = page_report.get("page_apply_policy", "apply_overlay")
         page_apply_policy_summary[page_apply_policy] += 1
+        page_render_decision_summary: Counter[str] = Counter()
+        render_review_items: list[dict[str, Any]] = []
 
         for replacement in page_report.get("replacements", []):
             considered += 1
             total_considered += 1
+            render_decision = _native_render_decision(
+                replacement,
+                page_apply_policy,
+                allowed_fit_risks,
+                allowed_statuses,
+            )
+            page_render_decision_summary[render_decision] += 1
+            render_decision_summary[render_decision] += 1
+            render_review_items.append(_native_render_review_item(replacement, render_decision))
 
-            if str(page_apply_policy).startswith("skip_overlay_"):
+            if render_decision == "skipped_page_policy":
                 skipped_due_to_page_policy += 1
                 total_skipped_due_to_page_policy += 1
                 continue
-            if replacement.get("status") not in allowed_statuses:
-                continue
-            if replacement.get("apply_strategy") in {"native_review_required", "native_skipped"}:
-                continue
-            if replacement.get("fit_risk") not in allowed_fit_risks:
+            if render_decision != "applied":
+                total_skipped += 1
                 continue
 
             bbox = replacement["bbox"]
@@ -1405,7 +1447,10 @@ def render_overlay_prototype(
                 "page_apply_policy": page_apply_policy,
                 "considered_replacements": considered,
                 "applied_replacements": applied,
+                "skipped_replacements": considered - applied,
                 "skipped_replacements_due_to_page_policy": skipped_due_to_page_policy,
+                "render_decision_summary": dict(page_render_decision_summary),
+                "render_review_items": render_review_items,
             }
         )
 
@@ -1419,7 +1464,9 @@ def render_overlay_prototype(
         "page_count": len(summary_pages),
         "total_considered_replacements": total_considered,
         "total_applied_replacements": total_applied,
+        "total_skipped_replacements": total_skipped + total_skipped_due_to_page_policy,
         "total_skipped_replacements_due_to_page_policy": total_skipped_due_to_page_policy,
+        "render_decision_summary": dict(render_decision_summary),
         "page_apply_policy_summary": dict(page_apply_policy_summary),
         "pages": summary_pages,
         "allowed_fit_risks": list(allowed_fit_risks),
@@ -1437,19 +1484,35 @@ def overlay_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         f"Allowed fit risks: {summary['allowed_fit_risks']}",
         f"Total considered replacements: {summary['total_considered_replacements']}",
         f"Total applied replacements: {summary['total_applied_replacements']}",
+        f"Total skipped replacements: {summary.get('total_skipped_replacements', 0)}",
         f"Total skipped by page policy: {summary.get('total_skipped_replacements_due_to_page_policy', 0)}",
     ]
     if summary.get("page_apply_policy_summary"):
         lines.append(
             f"Page apply policies: {json.dumps(summary.get('page_apply_policy_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
+    if summary.get("render_decision_summary"):
+        lines.append(
+            f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
+        )
 
     for page in summary.get("pages", []):
         lines.append(
             f"Page {page['page_number']}: policy={page.get('page_apply_policy', 'apply_overlay')} "
             f"applied={page['applied_replacements']} / considered={page['considered_replacements']} "
-            f"skipped_by_policy={page.get('skipped_replacements_due_to_page_policy', 0)}"
+            f"skipped={page.get('skipped_replacements', 0)} "
+            f"skipped_by_policy={page.get('skipped_replacements_due_to_page_policy', 0)} "
+            f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
+        for review_item in page.get("render_review_items", [])[:5]:
+            preview = review_item.get("text_preview", "")
+            lines.append(
+                f"  render {review_item.get('replacement_index')}: "
+                f"decision={review_item.get('render_decision')} "
+                f"status={review_item.get('status')} "
+                f"risk={review_item.get('fit_risk')} "
+                f"strategy={review_item.get('apply_strategy')} text={preview}"
+            )
 
     return "\n".join(lines)
 

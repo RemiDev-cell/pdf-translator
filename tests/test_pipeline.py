@@ -224,6 +224,9 @@ def test_run_native_overlay_preview_writes_artifact_chain(tmp_path: Path) -> Non
     assert result["replacement_plan"]["pages"][0]["page_apply_policy"] == "apply_overlay"
     assert result["overlay_summary"]["page_apply_policy_summary"] == {"apply_overlay": 1}
     assert result["overlay_summary"]["pages"][0]["page_apply_policy"] == "apply_overlay"
+    assert result["overlay_summary"]["render_decision_summary"]
+    assert result["overlay_summary"]["pages"][0]["render_decision_summary"]
+    assert result["overlay_summary"]["pages"][0]["render_review_items"]
 
 
 def test_run_document_preview_routes_native_pages_to_native_overlay(tmp_path: Path) -> None:

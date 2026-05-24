@@ -210,7 +210,7 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 - pre-overlay reports
 - overlay preview PDFs and PNGs
 - translation preview files
-- native replacement plans and overlay summaries with per-page apply policies derived from overlay readiness
+- native replacement plans and overlay summaries with per-page apply policies and render decisions derived from overlay readiness
 - OCR candidate reports, crops, manifests, and review reports
 - mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
 
@@ -238,6 +238,7 @@ Overlay readiness now gates native overlay application:
 - `blocked` pages use `skip_overlay_blocked`
 
 Skipped pages still produce the diagnostic chain, but their replacements are counted as considered rather than applied.
+Native overlay summaries also explain each considered replacement as `applied`, `skipped_page_policy`, `skipped_status`, `skipped_apply_strategy`, or `skipped_fit_risk`.
 
 Representative pages already validated on the real PowerPoint-exported scientific deck:
 

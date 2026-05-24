@@ -691,11 +691,76 @@ def test_render_overlay_prototype_skips_review_required_replacements(tmp_path) -
 
     assert pdf_path.exists()
     assert summary["total_applied_replacements"] == 1
+    assert summary["total_skipped_replacements"] == 1
     assert summary["page_apply_policy_summary"] == {"apply_overlay": 1}
     assert summary["total_skipped_replacements_due_to_page_policy"] == 0
+    assert summary["render_decision_summary"] == {
+        "applied": 1,
+        "skipped_apply_strategy": 1,
+    }
+    assert summary["pages"][0]["render_decision_summary"] == {
+        "applied": 1,
+        "skipped_apply_strategy": 1,
+    }
+    assert [
+        item["render_decision"]
+        for item in summary["pages"][0]["render_review_items"]
+    ] == ["applied", "skipped_apply_strategy"]
     assert "Total applied replacements: 1" in text
     assert "Page apply policies:" in text
+    assert "Render decisions:" in text
+    assert "decision=skipped_apply_strategy" in text
     assert summary_path.exists()
+
+
+def test_render_overlay_prototype_explains_status_skips(tmp_path) -> None:
+    source_pdf = tmp_path / "source-status.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((20, 40), "Bonjour", fontsize=12)
+    doc.save(source_pdf)
+    doc.close()
+
+    replacement_plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "page_apply_policy": "apply_overlay",
+                "replacements": [
+                    {
+                        "replacement_index": 1,
+                        "role": "content",
+                        "bbox": {"x0": 10, "y0": 20, "x1": 150, "y1": 80},
+                        "translated_text": "[TIMEOUT] Bonjour",
+                        "status": "timeout",
+                        "fit_risk": "low",
+                        "apply_strategy": "native_overlay_candidate",
+                    },
+                ],
+            }
+        ],
+    }
+
+    _, summary = render_overlay_prototype(
+        pdf_path=source_pdf,
+        replacement_plan=replacement_plan,
+        output_dir=tmp_path,
+        stem="overlay_proto_status",
+    )
+
+    assert summary["total_applied_replacements"] == 0
+    assert summary["total_skipped_replacements"] == 1
+    assert summary["render_decision_summary"] == {"skipped_status": 1}
+    assert summary["pages"][0]["render_review_items"][0] == {
+        "replacement_index": 1,
+        "role": "content",
+        "status": "timeout",
+        "fit_risk": "low",
+        "apply_strategy": "native_overlay_candidate",
+        "render_decision": "skipped_status",
+        "text_preview": "[TIMEOUT] Bonjour",
+    }
 
 
 def test_render_overlay_prototype_applies_soft_review_pages(tmp_path) -> None:
@@ -722,7 +787,10 @@ def test_render_overlay_prototype_applies_soft_review_pages(tmp_path) -> None:
     assert summary["pages"][0]["page_apply_policy"] == "apply_overlay_with_soft_review"
     assert summary["total_considered_replacements"] == 1
     assert summary["total_applied_replacements"] == 1
+    assert summary["total_skipped_replacements"] == 0
     assert summary["total_skipped_replacements_due_to_page_policy"] == 0
+    assert summary["render_decision_summary"] == {"applied": 1}
+    assert summary["pages"][0]["render_review_items"][0]["render_decision"] == "applied"
 
 
 def test_render_overlay_prototype_skips_hard_review_and_blocked_pages(tmp_path) -> None:
@@ -753,8 +821,11 @@ def test_render_overlay_prototype_skips_hard_review_and_blocked_pages(tmp_path) 
         assert summary["pages"][0]["page_apply_policy"] == expected_policy
         assert summary["total_considered_replacements"] == 1
         assert summary["total_applied_replacements"] == 0
+        assert summary["total_skipped_replacements"] == 1
         assert summary["total_skipped_replacements_due_to_page_policy"] == 1
+        assert summary["render_decision_summary"] == {"skipped_page_policy": 1}
         assert summary["pages"][0]["skipped_replacements_due_to_page_policy"] == 1
+        assert summary["pages"][0]["render_review_items"][0]["render_decision"] == "skipped_page_policy"
 
 
 def test_render_overlay_prototype_keeps_fit_risk_gate_on_ready_pages(tmp_path) -> None:
@@ -772,6 +843,7 @@ def test_render_overlay_prototype_keeps_fit_risk_gate_on_ready_pages(tmp_path) -
         ),
         overlay_ready_report=_overlay_ready_report_for_status("ready"),
     )
+    replacement_plan["pages"][0]["replacements"][0]["apply_strategy"] = "native_overlay_candidate"
 
     _, summary = render_overlay_prototype(
         pdf_path=source_pdf,
@@ -784,4 +856,7 @@ def test_render_overlay_prototype_keeps_fit_risk_gate_on_ready_pages(tmp_path) -
     assert replacement_plan["pages"][0]["replacements"][0]["fit_risk"] == "high"
     assert summary["total_considered_replacements"] == 1
     assert summary["total_applied_replacements"] == 0
+    assert summary["total_skipped_replacements"] == 1
     assert summary["total_skipped_replacements_due_to_page_policy"] == 0
+    assert summary["render_decision_summary"] == {"skipped_fit_risk": 1}
+    assert summary["pages"][0]["render_review_items"][0]["render_decision"] == "skipped_fit_risk"
