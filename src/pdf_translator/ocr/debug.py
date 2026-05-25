@@ -1410,36 +1410,40 @@ def build_fusion_replacement_plan(
                 decision = None
             apply_strategy_summary[apply_strategy] = apply_strategy_summary.get(apply_strategy, 0) + 1
 
-            replacements.append(
-                {
-                    "replacement_index": index,
-                    "segment_id": segment.get("segment_id"),
-                    "source_kind": source_kind,
-                    "source_ref": segment.get("source_ref", ""),
-                    "role": segment.get("role", "content"),
-                    "source_text": source_text,
-                    "translated_text": translated_text,
-                    "bbox": bbox,
-                    "crop_bbox": segment.get("crop_bbox", bbox),
-                    "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
-                    "crop_padding_applied_pt": segment.get("crop_padding_applied_pt", {}),
-                    "crop_constrained_edges": segment.get("crop_constrained_edges", []),
-                    "ocr_layout": segment.get("ocr_layout", []),
-                    "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
-                    "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
-                    "status": segment.get("status", "missing"),
-                    "translation_method": segment.get("translation_method", "unknown"),
-                    "translation_attempt_count": segment.get("translation_attempt_count", 0),
-                    "translation_method_summary": segment.get("translation_method_summary", {}),
-                    "source_length": source_len,
-                    "translated_length": translated_len,
-                    "overflow_ratio": round(overflow_ratio, 2),
-                    "fit_risk": _estimate_fusion_fit_risk(source_text, translated_text, source_kind),
-                    "fit_diagnostics": fit_diagnostics,
-                    "apply_strategy": apply_strategy,
-                    "ocr_decision": decision,
-                }
-            )
+            replacement = {
+                "replacement_index": index,
+                "segment_id": segment.get("segment_id"),
+                "source_kind": source_kind,
+                "source_ref": segment.get("source_ref", ""),
+                "role": segment.get("role", "content"),
+                "source_text": source_text,
+                "translated_text": translated_text,
+                "bbox": bbox,
+                "crop_bbox": segment.get("crop_bbox", bbox),
+                "crop_padding_pt": segment.get("crop_padding_pt", 0.0),
+                "crop_padding_applied_pt": segment.get("crop_padding_applied_pt", {}),
+                "crop_constrained_edges": segment.get("crop_constrained_edges", []),
+                "ocr_layout": segment.get("ocr_layout", []),
+                "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
+                "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
+                "status": segment.get("status", "missing"),
+                "translation_method": segment.get("translation_method", "unknown"),
+                "translation_attempt_count": segment.get("translation_attempt_count", 0),
+                "translation_method_summary": segment.get("translation_method_summary", {}),
+                "source_length": source_len,
+                "translated_length": translated_len,
+                "overflow_ratio": round(overflow_ratio, 2),
+                "fit_risk": _estimate_fusion_fit_risk(source_text, translated_text, source_kind),
+                "fit_diagnostics": fit_diagnostics,
+                "apply_strategy": apply_strategy,
+                "ocr_decision": decision,
+            }
+            if source_kind == "ocr":
+                recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
+                replacement["ocr_recommendation"] = recommendation
+                replacement["ocr_recommendation_reasons"] = reasons
+
+            replacements.append(replacement)
 
         total_replacements += len(replacements)
         page_reports.append(
@@ -1478,6 +1482,7 @@ def fusion_replacement_plan_to_text(plan: dict[str, Any]) -> str:
                 f"strategy={item['apply_strategy']} risk={item['fit_risk']} "
                 f"method={item.get('translation_method', 'unknown')} "
                 f"attempts={item.get('translation_attempt_count', 0)} "
+                f"recommendation={item.get('ocr_recommendation', 'n/a')} "
                 f"ratio={item['overflow_ratio']}: {_truncate_preview(item.get('translated_text', ''), 160)}"
             )
 
@@ -2055,6 +2060,8 @@ def _fusion_render_review_item(
         "status": replacement.get("status", "unknown"),
         "fit_risk": replacement.get("fit_risk", "unknown"),
         "apply_strategy": replacement.get("apply_strategy", "unknown"),
+        "ocr_recommendation": replacement.get("ocr_recommendation"),
+        "ocr_recommendation_reasons": replacement.get("ocr_recommendation_reasons", []),
         "translation_method": replacement.get("translation_method", "unknown"),
         "translation_attempt_count": replacement.get("translation_attempt_count", 0),
         "render_decision": render_decision,
@@ -2116,7 +2123,7 @@ def render_fusion_overlay_diagnostics(
             status = replacement.get("status")
             fit_risk = replacement.get("fit_risk")
 
-            if status != "translated":
+            if status != "translated" and replacement.get("source_kind") != "ocr":
                 record_render_decision(replacement, "skipped_status")
                 skipped += 1
                 total_skipped += 1
@@ -2169,15 +2176,14 @@ def render_fusion_overlay_diagnostics(
                 total_skipped += 1
                 continue
 
-            if strategy == "ocr_overlay_candidate":
-                recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
+            if replacement.get("source_kind") == "ocr":
+                recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
+                replacement["ocr_recommendation"] = recommendation
+                replacement["ocr_recommendation_reasons"] = reasons
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
 
-                decision = replacement.get("ocr_decision") or {}
-                confidence = decision.get("confidence", "medium")
-
-                if confidence in {"high", "medium"}:
+                if recommendation == "image_overlay_candidate":
                     record_render_decision(replacement, "applied_ocr_overlay")
                     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
@@ -2205,17 +2211,10 @@ def render_fusion_overlay_diagnostics(
                     total_ocr_overlay_applied += 1
                     continue
 
-            if strategy in {"ocr_side_annotation", "ocr_review_required"}:
-                recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
-                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
-
-                if recommendation == "image_overlay_candidate":
-                    total_ocr_overlay_applied += 1
-                elif recommendation == "side_annotation_recommended":
+                if recommendation == "side_annotation_recommended":
                     total_ocr_side_annotated += 1
                 else:
                     total_ocr_review_required += 1
-                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
                 render_decision = (
                     "annotated_ocr_review"
                     if recommendation == "manual_review"
@@ -2338,6 +2337,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
                 f"status={review_item.get('status')} "
                 f"risk={review_item.get('fit_risk')} "
                 f"strategy={review_item.get('apply_strategy')} "
+                f"recommendation={review_item.get('ocr_recommendation') or 'n/a'} "
                 f"method={review_item.get('translation_method', 'unknown')} "
                 f"attempts={review_item.get('translation_attempt_count', 0)} "
                 f"text={review_item.get('text_preview', '')}"
@@ -2404,6 +2404,13 @@ def _recommend_ocr_overlay_strategy(replacement: dict[str, Any]) -> tuple[str, l
     return "side_annotation_recommended", reasons
 
 
+def _ocr_recommendation_for_replacement(replacement: dict[str, Any]) -> tuple[str, list[str]]:
+    recommendation = replacement.get("ocr_recommendation")
+    if recommendation:
+        return recommendation, list(replacement.get("ocr_recommendation_reasons", []))
+    return _recommend_ocr_overlay_strategy(replacement)
+
+
 def build_ocr_overlay_strategy_report(
     fusion_replacement_plan: dict[str, Any],
 ) -> dict[str, Any]:
@@ -2417,7 +2424,7 @@ def build_ocr_overlay_strategy_report(
             if replacement.get("source_kind") != "ocr":
                 continue
 
-            recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
+            recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
             recommendation_summary[recommendation] = recommendation_summary.get(recommendation, 0) + 1
             total_ocr_replacements += 1
             decisions.append(

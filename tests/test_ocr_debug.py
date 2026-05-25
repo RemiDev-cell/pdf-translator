@@ -900,10 +900,13 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
     assert plan["pages"][0]["replacements"][0]["translation_method"] == "model"
     assert plan["pages"][0]["replacements"][1]["translation_method"] == "structural_fallback"
     assert plan["pages"][0]["replacements"][1]["translation_attempt_count"] == 0
+    assert plan["pages"][0]["replacements"][1]["ocr_recommendation"] == "image_overlay_candidate"
+    assert "low_fit_risk" in plan["pages"][0]["replacements"][1]["ocr_recommendation_reasons"]
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["bbox_area"] == 4400
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["flags"] == []
     assert "P1N0 [native/translated]" in text
     assert "strategy=ocr_overlay_candidate" in text
+    assert "recommendation=image_overlay_candidate" in text
     assert "method=structural_fallback" in text
     assert json_path.exists()
     assert text_path.exists()
@@ -944,6 +947,17 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
                         "bbox": {"x0": 40, "y0": 90, "x1": 200, "y1": 170},
                         "translated_text": "OCR translated text waiting for image overlay.",
                     },
+                    {
+                        "segment_id": "P1O1",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {"x0": 40, "y0": 182, "x1": 200, "y1": 212},
+                        "translated_text": "Short OCR label",
+                    },
                 ],
             }
         ],
@@ -963,24 +977,33 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
     assert image_paths[0].exists()
     assert summary_path.exists()
     assert summary["total_native_applied"] == 1
-    assert summary["total_ocr_annotated"] == 1
+    assert summary["total_ocr_annotated"] == 2
     assert summary["render_decision_summary"] == {
         "applied_native_overlay": 1,
+        "annotated_ocr_side": 1,
         "applied_ocr_overlay": 1,
     }
     assert summary["pages"][0]["render_decision_summary"] == {
         "applied_native_overlay": 1,
+        "annotated_ocr_side": 1,
         "applied_ocr_overlay": 1,
     }
     assert [
         item["render_decision"]
         for item in summary["pages"][0]["render_review_items"]
-    ] == ["applied_native_overlay", "applied_ocr_overlay"]
-    assert summary["ocr_recommendation_summary"] == {"side_annotation_recommended": 1}
-    assert summary["pages"][0]["ocr_recommendations"] == {"side_annotation_recommended": 1}
-    assert "Total OCR annotated: 1" in text
-    assert 'OCR recommendations: {"side_annotation_recommended": 1}' in text
+    ] == ["applied_native_overlay", "annotated_ocr_side", "applied_ocr_overlay"]
+    assert summary["ocr_recommendation_summary"] == {
+        "side_annotation_recommended": 1,
+        "image_overlay_candidate": 1,
+    }
+    assert summary["pages"][0]["ocr_recommendations"] == {
+        "side_annotation_recommended": 1,
+        "image_overlay_candidate": 1,
+    }
+    assert "Total OCR annotated: 2" in text
+    assert 'OCR recommendations: {"image_overlay_candidate": 1, "side_annotation_recommended": 1}' in text
     assert "Render decisions:" in text
+    assert "decision=annotated_ocr_side" in text
     assert "decision=applied_ocr_overlay" in text
 
 
@@ -1134,6 +1157,7 @@ def test_render_fusion_overlay_diagnostics_explains_skips_and_side_annotations(t
         "annotated_ocr_side": 1,
     }
     assert summary["pages"][0]["render_review_items"][0]["translation_method"] == "timeout"
+    assert summary["pages"][0]["render_review_items"][-1]["ocr_recommendation"] == "side_annotation_recommended"
     assert "decision=skipped_status" in text
     assert "decision=annotated_ocr_side" in text
 

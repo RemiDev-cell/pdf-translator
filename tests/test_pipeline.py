@@ -286,8 +286,25 @@ def test_run_document_preview_routes_image_pages_to_fusion(tmp_path: Path) -> No
     preview_result = result["preview_result"]
     assert preview_result["fusion_translation_preview"]["pages"][0]["segments"][0]["translation_method"] == "model"
     assert preview_result["fusion_replacement_plan"]["pages"][0]["replacements"][0]["translation_method"] == "model"
+    ocr_replacements = [
+        replacement
+        for page in preview_result["fusion_replacement_plan"]["pages"]
+        for replacement in page["replacements"]
+        if replacement["source_kind"] == "ocr"
+    ]
+    assert ocr_replacements
+    assert ocr_replacements[0]["ocr_recommendation"]
+    assert ocr_replacements[0]["ocr_recommendation_reasons"]
     assert preview_result["diagnostics_summary"]["render_decision_summary"]
     assert preview_result["diagnostics_summary"]["pages"][0]["render_review_items"]
+    ocr_review_items = [
+        item
+        for page in preview_result["diagnostics_summary"]["pages"]
+        for item in page["render_review_items"]
+        if item["source_kind"] == "ocr"
+    ]
+    assert ocr_review_items
+    assert ocr_review_items[0]["ocr_recommendation"] == ocr_replacements[0]["ocr_recommendation"]
 
 
 def test_run_document_preview_routes_hybrid_page_with_decorative_and_text_images(tmp_path: Path) -> None:
