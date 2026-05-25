@@ -213,6 +213,7 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 - native replacement plans and overlay summaries with per-page apply policies and render decisions derived from overlay readiness
 - OCR candidate reports, crops, manifests, and review reports
 - mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
+- OCR readiness summaries that classify OCR regions before any in-place image recomposition
 
 These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
 
@@ -271,6 +272,7 @@ It currently supports:
 - translating mixed native/OCR segments
 - building a mixed replacement plan with explicit strategies
 - recommending whether OCR output should remain a side annotation or become a future image-overlay candidate
+- classifying OCR readiness as `ready_for_image_overlay`, `side_annotation_review`, `manual_review`, or `blocked`
 - rendering a diagnostic PDF that applies native replacements and annotates pending OCR regions
 - explaining mixed native/OCR translation methods and render decisions in debug summaries
 
@@ -301,6 +303,7 @@ Current OCR boundary:
 - native text replacements can still be previewed through the overlay path
 - fusion/OCR summaries now expose translation method, attempt count, and per-replacement render decisions
 - OCR diagnostic rendering is driven by the final OCR recommendation: image overlay, side annotation, or manual review
+- OCR readiness is diagnostic-only for now; it explains whether each OCR region is ready for image overlay, needs side/manual review, or is blocked by translation, geometry, empty text, or clipping risk
 - OCR regions are not yet rewritten inside the scanned image itself
 - long OCR translations are currently recommended as side annotations when they do not fit safely into the source image region
 

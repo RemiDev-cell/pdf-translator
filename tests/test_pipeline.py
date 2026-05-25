@@ -295,7 +295,11 @@ def test_run_document_preview_routes_image_pages_to_fusion(tmp_path: Path) -> No
     assert ocr_replacements
     assert ocr_replacements[0]["ocr_recommendation"]
     assert ocr_replacements[0]["ocr_recommendation_reasons"]
+    assert ocr_replacements[0]["ocr_readiness_status"]
+    assert ocr_replacements[0]["ocr_readiness_reasons"]
+    assert preview_result["fusion_replacement_plan"]["ocr_readiness_summary"]
     assert preview_result["diagnostics_summary"]["render_decision_summary"]
+    assert preview_result["diagnostics_summary"]["ocr_readiness_summary"]
     assert preview_result["diagnostics_summary"]["pages"][0]["render_review_items"]
     ocr_review_items = [
         item
@@ -305,6 +309,7 @@ def test_run_document_preview_routes_image_pages_to_fusion(tmp_path: Path) -> No
     ]
     assert ocr_review_items
     assert ocr_review_items[0]["ocr_recommendation"] == ocr_replacements[0]["ocr_recommendation"]
+    assert ocr_review_items[0]["ocr_readiness_status"] == ocr_replacements[0]["ocr_readiness_status"]
 
 
 def test_run_document_preview_routes_hybrid_page_with_decorative_and_text_images(tmp_path: Path) -> None:

@@ -902,14 +902,161 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
     assert plan["pages"][0]["replacements"][1]["translation_attempt_count"] == 0
     assert plan["pages"][0]["replacements"][1]["ocr_recommendation"] == "image_overlay_candidate"
     assert "low_fit_risk" in plan["pages"][0]["replacements"][1]["ocr_recommendation_reasons"]
+    assert plan["pages"][0]["replacements"][1]["ocr_readiness_status"] == "ready_for_image_overlay"
+    assert "recommendation=image_overlay_candidate" in plan["pages"][0]["replacements"][1]["ocr_readiness_reasons"]
+    assert plan["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
+    assert plan["pages"][0]["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["bbox_area"] == 4400
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["flags"] == []
     assert "P1N0 [native/translated]" in text
     assert "strategy=ocr_overlay_candidate" in text
     assert "recommendation=image_overlay_candidate" in text
+    assert "readiness=ready_for_image_overlay" in text
     assert "method=structural_fallback" in text
     assert json_path.exists()
     assert text_path.exists()
+
+
+def test_build_fusion_replacement_plan_summarizes_ocr_readiness() -> None:
+    preview_report = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "segments": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "role": "ocr_region",
+                        "status": "translated",
+                        "source_text": "Etiquette",
+                        "translated_text": "Label",
+                        "bbox": {"x0": 10, "y0": 10, "x1": 130, "y1": 50},
+                    },
+                    {
+                        "segment_id": "P1O1",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:1",
+                        "role": "ocr_region",
+                        "status": "translated",
+                        "source_text": "Court",
+                        "translated_text": (
+                            "This translated OCR text is deliberately much longer than the source "
+                            "and should remain visible as a side annotation."
+                        ),
+                        "bbox": {"x0": 10, "y0": 70, "x1": 130, "y1": 100},
+                    },
+                    {
+                        "segment_id": "P1O2",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:2",
+                        "role": "ocr_region",
+                        "status": "timeout",
+                        "source_text": "Texte OCR",
+                        "translated_text": "[TIMEOUT] Texte OCR",
+                        "bbox": {"x0": 10, "y0": 120, "x1": 130, "y1": 150},
+                    },
+                    {
+                        "segment_id": "P1O3",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:3",
+                        "role": "ocr_region",
+                        "status": "translated",
+                        "source_text": "Texte OCR",
+                        "translated_text": "",
+                        "bbox": {"x0": 10, "y0": 170, "x1": 130, "y1": 200},
+                    },
+                    {
+                        "segment_id": "P1O4",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:4",
+                        "role": "ocr_region",
+                        "status": "translated",
+                        "source_text": "Texte OCR",
+                        "translated_text": "OCR text",
+                        "bbox": {"x0": 10, "y0": 210, "x1": 130, "y1": 240},
+                        "edge_clipping_detected": True,
+                    },
+                    {
+                        "segment_id": "P1O5",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:5",
+                        "role": "ocr_region",
+                        "status": "translated",
+                        "source_text": "Texte OCR",
+                        "translated_text": "OCR text",
+                        "bbox": {},
+                    },
+                ],
+            }
+        ],
+    }
+
+    plan = build_fusion_replacement_plan(preview_report)
+    replacements = plan["pages"][0]["replacements"]
+
+    assert [replacement["ocr_readiness_status"] for replacement in replacements] == [
+        "ready_for_image_overlay",
+        "side_annotation_review",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
+    assert plan["ocr_readiness_summary"] == {
+        "ready_for_image_overlay": 1,
+        "side_annotation_review": 1,
+        "blocked": 4,
+    }
+    assert plan["pages"][0]["ocr_readiness_summary"] == plan["ocr_readiness_summary"]
+    assert plan["ocr_readiness_reason_summary"]["recommendation=image_overlay_candidate"] == 1
+    assert plan["ocr_readiness_reason_summary"]["recommendation=side_annotation_recommended"] == 1
+    assert plan["ocr_readiness_reason_summary"]["status=timeout"] == 1
+    assert plan["ocr_readiness_reason_summary"]["empty_translation"] == 1
+    assert plan["ocr_readiness_reason_summary"]["edge_clipping_detected"] == 1
+    assert plan["ocr_readiness_reason_summary"]["missing_bbox"] == 1
+
+
+def test_build_ocr_overlay_strategy_report_preserves_manual_review_readiness() -> None:
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {"x0": 10, "y0": 20, "x1": 160, "y1": 60},
+                        "source_text": "Texte OCR",
+                        "translated_text": "OCR text",
+                        "ocr_recommendation": "manual_review",
+                        "ocr_recommendation_reasons": ["human_review_requested"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    report = build_ocr_overlay_strategy_report(plan)
+    decision = report["pages"][0]["decisions"][0]
+
+    assert report["ocr_readiness_summary"] == {"manual_review": 1}
+    assert report["pages"][0]["ocr_readiness_summary"] == {"manual_review": 1}
+    assert decision["recommendation"] == "manual_review"
+    assert decision["ocr_readiness_status"] == "manual_review"
+    assert decision["ocr_readiness_reasons"] == [
+        "recommendation=manual_review",
+        "human_review_requested",
+    ]
 
 
 def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: Path) -> None:
@@ -996,15 +1143,30 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
         "side_annotation_recommended": 1,
         "image_overlay_candidate": 1,
     }
+    assert summary["ocr_readiness_summary"] == {
+        "side_annotation_review": 1,
+        "ready_for_image_overlay": 1,
+    }
     assert summary["pages"][0]["ocr_recommendations"] == {
         "side_annotation_recommended": 1,
         "image_overlay_candidate": 1,
     }
+    assert summary["pages"][0]["ocr_readiness_summary"] == {
+        "side_annotation_review": 1,
+        "ready_for_image_overlay": 1,
+    }
+    assert [
+        item["ocr_readiness_status"]
+        for item in summary["pages"][0]["render_review_items"]
+        if item["source_kind"] == "ocr"
+    ] == ["side_annotation_review", "ready_for_image_overlay"]
     assert "Total OCR annotated: 2" in text
     assert 'OCR recommendations: {"image_overlay_candidate": 1, "side_annotation_recommended": 1}' in text
+    assert 'OCR readiness: {"ready_for_image_overlay": 1, "side_annotation_review": 1}' in text
     assert "Render decisions:" in text
     assert "decision=annotated_ocr_side" in text
     assert "decision=applied_ocr_overlay" in text
+    assert "readiness=side_annotation_review" in text
 
 
 def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(tmp_path: Path) -> None:
@@ -1053,10 +1215,13 @@ def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(t
     assert len(image_paths) == 2
     assert summary["total_ocr_review_required"] == 1
     assert summary["ocr_recommendation_summary"] == {"manual_review": 1}
+    assert summary["ocr_readiness_summary"] == {"blocked": 1}
     assert summary["render_decision_summary"] == {"annotated_ocr_review": 1}
     assert summary["ocr_review_appendix_page_count"] == 1
+    assert summary["pages"][0]["render_review_items"][0]["ocr_readiness_status"] == "blocked"
     assert "OCR review appendix pages: 1" in text
     assert "decision=annotated_ocr_review" in text
+    assert "readiness=blocked" in text
     rendered = fitz.open(pdf_output_path)
     try:
         assert rendered.page_count == 2
@@ -1158,8 +1323,11 @@ def test_render_fusion_overlay_diagnostics_explains_skips_and_side_annotations(t
     }
     assert summary["pages"][0]["render_review_items"][0]["translation_method"] == "timeout"
     assert summary["pages"][0]["render_review_items"][-1]["ocr_recommendation"] == "side_annotation_recommended"
+    assert summary["ocr_readiness_summary"] == {"side_annotation_review": 1}
+    assert summary["pages"][0]["render_review_items"][-1]["ocr_readiness_status"] == "side_annotation_review"
     assert "decision=skipped_status" in text
     assert "decision=annotated_ocr_side" in text
+    assert "readiness=side_annotation_review" in text
 
 
 def test_build_ocr_overlay_strategy_report_recommends_by_size_and_status(tmp_path: Path) -> None:
@@ -1211,9 +1379,16 @@ def test_build_ocr_overlay_strategy_report_recommends_by_size_and_status(tmp_pat
         "side_annotation_recommended": 1,
         "image_overlay_candidate": 1,
     }
+    assert report["ocr_readiness_summary"] == {
+        "side_annotation_review": 1,
+        "ready_for_image_overlay": 1,
+    }
     assert report["pages"][0]["decisions"][0]["recommendation"] == "side_annotation_recommended"
     assert report["pages"][0]["decisions"][1]["recommendation"] == "image_overlay_candidate"
+    assert report["pages"][0]["decisions"][0]["ocr_readiness_status"] == "side_annotation_review"
+    assert report["pages"][0]["decisions"][1]["ocr_readiness_status"] == "ready_for_image_overlay"
     assert "P1O0 recommendation=side_annotation_recommended" in text
+    assert "readiness=side_annotation_review" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -1256,8 +1431,10 @@ def test_build_ocr_overlay_strategy_report_uses_generated_fit_diagnostics() -> N
 
     decisions = report["pages"][0]["decisions"]
     assert decisions[0]["recommendation"] == "image_overlay_candidate"
+    assert decisions[0]["ocr_readiness_status"] == "ready_for_image_overlay"
     assert decisions[0]["fit_diagnostics"]["flags"] == []
     assert decisions[1]["recommendation"] == "side_annotation_recommended"
+    assert decisions[1]["ocr_readiness_status"] == "side_annotation_review"
     assert "large_translation_expansion" in plan["pages"][0]["replacements"][1]["fit_diagnostics"]["flags"]
 
 
@@ -1298,6 +1475,12 @@ def test_build_ocr_page_translation_preview_report_combines_page_translation_and
                     {
                         "segment_id": "P1O0",
                         "recommendation": "image_overlay_candidate",
+                        "ocr_readiness_status": "ready_for_image_overlay",
+                        "ocr_readiness_reasons": [
+                            "recommendation=image_overlay_candidate",
+                            "translation_size_close_to_source",
+                            "low_fit_risk",
+                        ],
                         "fit_risk": "low",
                         "overflow_ratio": 0.89,
                         "reasons": ["translation_size_close_to_source", "low_fit_risk"],
@@ -1320,13 +1503,17 @@ def test_build_ocr_page_translation_preview_report_combines_page_translation_and
     assert report["missing_pages"] == []
     assert report["total_native_segments"] == 1
     assert report["total_ocr_segments"] == 1
+    assert report["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
+    assert report["pages"][0]["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
     assert report["pages"][0]["segments"][1]["recommendation"] == "image_overlay_candidate"
+    assert report["pages"][0]["segments"][1]["ocr_readiness_status"] == "ready_for_image_overlay"
     assert report["pages"][0]["segments"][1]["translation_chunk_count"] == 2
     assert "Page 1: route=native_plus_ocr_candidates" in text
     assert "Rendered pages: [1]" in text
     assert "Missing pages: []" in text
     assert "P1O0 kind=ocr status=translated" in text
     assert "ocr_strategy: recommendation=image_overlay_candidate" in text
+    assert "readiness=ready_for_image_overlay" in text
     assert "translation_chunks: 2" in text
     assert json_path.exists()
     assert text_path.exists()

@@ -1377,9 +1377,13 @@ def build_fusion_replacement_plan(
     page_reports: list[dict[str, Any]] = []
     total_replacements = 0
     apply_strategy_summary: dict[str, int] = {}
+    ocr_readiness_summary: Counter[str] = Counter()
+    ocr_readiness_reason_summary: Counter[str] = Counter()
 
     for page in fusion_translation_preview_report.get("pages", []):
         replacements: list[dict[str, Any]] = []
+        page_ocr_readiness_summary: Counter[str] = Counter()
+        page_ocr_readiness_reason_summary: Counter[str] = Counter()
         for index, segment in enumerate(page.get("segments", []), start=1):
             source_text = segment.get("source_text", "")
             translated_text = segment.get("translated_text", "")
@@ -1439,9 +1443,12 @@ def build_fusion_replacement_plan(
                 "ocr_decision": decision,
             }
             if source_kind == "ocr":
-                recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
-                replacement["ocr_recommendation"] = recommendation
-                replacement["ocr_recommendation_reasons"] = reasons
+                _ensure_ocr_review_metadata(replacement)
+                page_ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                for reason in replacement["ocr_readiness_reasons"]:
+                    page_ocr_readiness_reason_summary[reason] += 1
+                    ocr_readiness_reason_summary[reason] += 1
 
             replacements.append(replacement)
 
@@ -1451,6 +1458,8 @@ def build_fusion_replacement_plan(
                 "page_number": page.get("page_number"),
                 "route": page.get("route", "unknown"),
                 "replacement_count": len(replacements),
+                "ocr_readiness_summary": dict(page_ocr_readiness_summary),
+                "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
                 "replacements": replacements,
             }
         )
@@ -1460,6 +1469,8 @@ def build_fusion_replacement_plan(
         "page_count": len(page_reports),
         "total_replacements": total_replacements,
         "apply_strategy_summary": apply_strategy_summary,
+        "ocr_readiness_summary": dict(ocr_readiness_summary),
+        "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
         "pages": page_reports,
     }
 
@@ -1470,11 +1481,14 @@ def fusion_replacement_plan_to_text(plan: dict[str, Any]) -> str:
         f"Replacement-plan pages: {plan['page_count']}",
         f"Total replacements: {plan['total_replacements']}",
         f"Apply strategies: {json.dumps(plan['apply_strategy_summary'], ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness: {json.dumps(plan.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness reasons: {json.dumps(plan.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
     ]
 
     for page in plan.get("pages", []):
         lines.append(
-            f"Page {page['page_number']}: route={page['route']} replacements={page['replacement_count']}"
+            f"Page {page['page_number']}: route={page['route']} replacements={page['replacement_count']} "
+            f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
         for item in page.get("replacements", [])[:5]:
             lines.append(
@@ -1483,6 +1497,7 @@ def fusion_replacement_plan_to_text(plan: dict[str, Any]) -> str:
                 f"method={item.get('translation_method', 'unknown')} "
                 f"attempts={item.get('translation_attempt_count', 0)} "
                 f"recommendation={item.get('ocr_recommendation', 'n/a')} "
+                f"readiness={item.get('ocr_readiness_status', 'n/a')} "
                 f"ratio={item['overflow_ratio']}: {_truncate_preview(item.get('translated_text', ''), 160)}"
             )
 
@@ -1571,6 +1586,7 @@ def _format_ocr_diagnostic_note(
     return (
         f"{replacement.get('segment_id')} OCR translation\n"
         f"recommendation={recommendation}\n"
+        f"readiness={replacement.get('ocr_readiness_status', 'unknown')}\n"
         f"risk={replacement.get('fit_risk')} ratio={replacement.get('overflow_ratio', 1.0)}\n"
         f"reason={reason_text}\n"
         f"flags={flag_text}\n"
@@ -1593,6 +1609,7 @@ def _format_ocr_review_appendix_note(
     return (
         f"{replacement.get('segment_id')} OCR manual review\n"
         f"recommendation={recommendation}\n"
+        f"readiness={replacement.get('ocr_readiness_status', 'unknown')}\n"
         f"risk={replacement.get('fit_risk')} ratio={replacement.get('overflow_ratio', 1.0)}\n"
         f"reason={reason_text}\n"
         f"flags={flags}\n"
@@ -2062,6 +2079,8 @@ def _fusion_render_review_item(
         "apply_strategy": replacement.get("apply_strategy", "unknown"),
         "ocr_recommendation": replacement.get("ocr_recommendation"),
         "ocr_recommendation_reasons": replacement.get("ocr_recommendation_reasons", []),
+        "ocr_readiness_status": replacement.get("ocr_readiness_status"),
+        "ocr_readiness_reasons": replacement.get("ocr_readiness_reasons", []),
         "translation_method": replacement.get("translation_method", "unknown"),
         "translation_attempt_count": replacement.get("translation_attempt_count", 0),
         "render_decision": render_decision,
@@ -2090,6 +2109,8 @@ def render_fusion_overlay_diagnostics(
     total_ocr_review_required = 0
     total_skipped = 0
     ocr_recommendation_summary: dict[str, int] = {}
+    ocr_readiness_summary: Counter[str] = Counter()
+    ocr_readiness_reason_summary: Counter[str] = Counter()
     render_decision_summary: Counter[str] = Counter()
     ocr_review_appendix_entries: list[dict[str, Any]] = []
 
@@ -2102,6 +2123,8 @@ def render_fusion_overlay_diagnostics(
         ocr_annotated = 0
         skipped = 0
         page_ocr_recommendations: dict[str, int] = {}
+        page_ocr_readiness_summary: Counter[str] = Counter()
+        page_ocr_readiness_reason_summary: Counter[str] = Counter()
         page_render_decision_summary: Counter[str] = Counter()
         render_review_items: list[dict[str, Any]] = []
 
@@ -2112,6 +2135,17 @@ def render_fusion_overlay_diagnostics(
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
+            if replacement.get("source_kind") == "ocr":
+                _ensure_ocr_review_metadata(replacement)
+                recommendation = replacement["ocr_recommendation"]
+                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
+                page_ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                for reason in replacement["ocr_readiness_reasons"]:
+                    page_ocr_readiness_reason_summary[reason] += 1
+                    ocr_readiness_reason_summary[reason] += 1
+
             rect = _rect_from_bbox(replacement.get("bbox", {}))
             if rect is None or rect.is_empty:
                 record_render_decision(replacement, "skipped_missing_bbox")
@@ -2177,11 +2211,8 @@ def render_fusion_overlay_diagnostics(
                 continue
 
             if replacement.get("source_kind") == "ocr":
-                recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
-                replacement["ocr_recommendation"] = recommendation
-                replacement["ocr_recommendation_reasons"] = reasons
-                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
-                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
+                recommendation = replacement["ocr_recommendation"]
+                reasons = replacement["ocr_recommendation_reasons"]
 
                 if recommendation == "image_overlay_candidate":
                     record_render_decision(replacement, "applied_ocr_overlay")
@@ -2260,6 +2291,8 @@ def render_fusion_overlay_diagnostics(
                 "native_applied": native_applied,
                 "ocr_annotated": ocr_annotated,
                 "ocr_recommendations": page_ocr_recommendations,
+                "ocr_readiness_summary": dict(page_ocr_readiness_summary),
+                "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
                 "skipped": skipped,
                 "render_decision_summary": dict(page_render_decision_summary),
                 "render_review_items": render_review_items,
@@ -2297,6 +2330,8 @@ def render_fusion_overlay_diagnostics(
         "total_ocr_side_annotated": total_ocr_side_annotated,
         "total_ocr_review_required": total_ocr_review_required,
         "ocr_recommendation_summary": ocr_recommendation_summary,
+        "ocr_readiness_summary": dict(ocr_readiness_summary),
+        "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
         "render_decision_summary": dict(render_decision_summary),
         "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
         "total_skipped": total_skipped,
@@ -2316,6 +2351,8 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
         f"Total native applied: {summary['total_native_applied']}",
         f"Total OCR annotated: {summary['total_ocr_annotated']}",
         f"OCR recommendations: {json.dumps(summary.get('ocr_recommendation_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness: {json.dumps(summary.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness reasons: {json.dumps(summary.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
         f"Total skipped: {summary['total_skipped']}",
@@ -2327,6 +2364,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
             f"ocr_annotated={page['ocr_annotated']} skipped={page['skipped']} "
             f"considered={page['considered_replacements']} "
             f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)} "
+            f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)} "
             f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
         for review_item in page.get("render_review_items", [])[:5]:
@@ -2338,6 +2376,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
                 f"risk={review_item.get('fit_risk')} "
                 f"strategy={review_item.get('apply_strategy')} "
                 f"recommendation={review_item.get('ocr_recommendation') or 'n/a'} "
+                f"readiness={review_item.get('ocr_readiness_status') or 'n/a'} "
                 f"method={review_item.get('translation_method', 'unknown')} "
                 f"attempts={review_item.get('translation_attempt_count', 0)} "
                 f"text={review_item.get('text_preview', '')}"
@@ -2404,11 +2443,59 @@ def _recommend_ocr_overlay_strategy(replacement: dict[str, Any]) -> tuple[str, l
     return "side_annotation_recommended", reasons
 
 
+def _blocking_ocr_readiness_reasons(replacement: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    status = replacement.get("status", "missing")
+    fit_diagnostics = replacement.get("fit_diagnostics", {})
+    flags = set(fit_diagnostics.get("flags", []))
+    translated_text = replacement.get("translated_text", "").strip()
+
+    if status != "translated":
+        reasons.append(f"status={status}")
+    if not translated_text:
+        reasons.append("empty_translation")
+    if _bbox_area(replacement.get("bbox", {})) <= 0:
+        reasons.append("missing_bbox")
+    if replacement.get("edge_clipping_detected") or "edge_clipping_detected" in flags:
+        reasons.append("edge_clipping_detected")
+
+    return reasons
+
+
+def _ocr_readiness_for_replacement(replacement: dict[str, Any]) -> tuple[str, list[str]]:
+    blocking_reasons = _blocking_ocr_readiness_reasons(replacement)
+    if blocking_reasons:
+        return "blocked", blocking_reasons
+
+    recommendation, recommendation_reasons = _ocr_recommendation_for_replacement(replacement)
+    status = {
+        "image_overlay_candidate": "ready_for_image_overlay",
+        "side_annotation_recommended": "side_annotation_review",
+        "manual_review": "manual_review",
+    }.get(recommendation, "manual_review")
+    reasons = [f"recommendation={recommendation}"]
+    reasons.extend(recommendation_reasons)
+    return status, reasons
+
+
 def _ocr_recommendation_for_replacement(replacement: dict[str, Any]) -> tuple[str, list[str]]:
     recommendation = replacement.get("ocr_recommendation")
     if recommendation:
         return recommendation, list(replacement.get("ocr_recommendation_reasons", []))
     return _recommend_ocr_overlay_strategy(replacement)
+
+
+def _ensure_ocr_review_metadata(replacement: dict[str, Any]) -> None:
+    if replacement.get("source_kind") != "ocr":
+        return
+
+    recommendation, recommendation_reasons = _ocr_recommendation_for_replacement(replacement)
+    replacement["ocr_recommendation"] = recommendation
+    replacement["ocr_recommendation_reasons"] = recommendation_reasons
+
+    readiness_status, readiness_reasons = _ocr_readiness_for_replacement(replacement)
+    replacement["ocr_readiness_status"] = readiness_status
+    replacement["ocr_readiness_reasons"] = readiness_reasons
 
 
 def build_ocr_overlay_strategy_report(
@@ -2417,15 +2504,28 @@ def build_ocr_overlay_strategy_report(
     page_reports: list[dict[str, Any]] = []
     total_ocr_replacements = 0
     recommendation_summary: dict[str, int] = {}
+    ocr_readiness_summary: Counter[str] = Counter()
+    ocr_readiness_reason_summary: Counter[str] = Counter()
 
     for page in fusion_replacement_plan.get("pages", []):
         decisions: list[dict[str, Any]] = []
+        page_ocr_readiness_summary: Counter[str] = Counter()
+        page_ocr_readiness_reason_summary: Counter[str] = Counter()
         for replacement in page.get("replacements", []):
             if replacement.get("source_kind") != "ocr":
                 continue
 
-            recommendation, reasons = _ocr_recommendation_for_replacement(replacement)
+            _ensure_ocr_review_metadata(replacement)
+            recommendation = replacement["ocr_recommendation"]
+            reasons = replacement["ocr_recommendation_reasons"]
+            readiness_status = replacement["ocr_readiness_status"]
+            readiness_reasons = replacement["ocr_readiness_reasons"]
             recommendation_summary[recommendation] = recommendation_summary.get(recommendation, 0) + 1
+            ocr_readiness_summary[readiness_status] += 1
+            page_ocr_readiness_summary[readiness_status] += 1
+            for reason in readiness_reasons:
+                ocr_readiness_reason_summary[reason] += 1
+                page_ocr_readiness_reason_summary[reason] += 1
             total_ocr_replacements += 1
             decisions.append(
                 {
@@ -2440,6 +2540,8 @@ def build_ocr_overlay_strategy_report(
                     "edge_clipping_line_count": int(replacement.get("edge_clipping_line_count", 0) or 0),
                     "recommendation": recommendation,
                     "reasons": reasons,
+                    "ocr_readiness_status": readiness_status,
+                    "ocr_readiness_reasons": readiness_reasons,
                     "translated_preview": _truncate_preview(replacement.get("translated_text", ""), 220),
                 }
             )
@@ -2449,6 +2551,8 @@ def build_ocr_overlay_strategy_report(
                 "page_number": page.get("page_number"),
                 "route": page.get("route", "unknown"),
                 "ocr_decision_count": len(decisions),
+                "ocr_readiness_summary": dict(page_ocr_readiness_summary),
+                "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
                 "decisions": decisions,
             }
         )
@@ -2458,6 +2562,8 @@ def build_ocr_overlay_strategy_report(
         "page_count": len(page_reports),
         "total_ocr_replacements": total_ocr_replacements,
         "recommendation_summary": recommendation_summary,
+        "ocr_readiness_summary": dict(ocr_readiness_summary),
+        "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
         "pages": page_reports,
     }
 
@@ -2468,15 +2574,19 @@ def ocr_overlay_strategy_report_to_text(report: dict[str, Any]) -> str:
         f"Strategy pages: {report['page_count']}",
         f"Total OCR replacements: {report['total_ocr_replacements']}",
         f"Recommendations: {json.dumps(report['recommendation_summary'], ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness: {json.dumps(report.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness reasons: {json.dumps(report.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
     ]
 
     for page in report.get("pages", []):
         lines.append(
-            f"Page {page['page_number']}: route={page['route']} ocr_decisions={page['ocr_decision_count']}"
+            f"Page {page['page_number']}: route={page['route']} ocr_decisions={page['ocr_decision_count']} "
+            f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
         for decision in page.get("decisions", [])[:5]:
             lines.append(
                 f"  {decision['segment_id']} recommendation={decision['recommendation']} "
+                f"readiness={decision.get('ocr_readiness_status', 'unknown')} "
                 f"risk={decision['fit_risk']} ratio={decision['overflow_ratio']} "
                 f"reasons={', '.join(decision['reasons'])}"
             )
@@ -2524,6 +2634,8 @@ def build_ocr_page_translation_preview_report(
     total_native_segments = 0
     total_ocr_segments = 0
     selected_pages = fusion_translation_preview_report.get("selected_pages")
+    ocr_readiness_summary: Counter[str] = Counter()
+    ocr_readiness_reason_summary: Counter[str] = Counter()
 
     for page in fusion_translation_preview_report.get("pages", []):
         page_number = int(page.get("page_number"))
@@ -2531,12 +2643,22 @@ def build_ocr_page_translation_preview_report(
         segments: list[dict[str, Any]] = []
         native_count = 0
         ocr_count = 0
+        page_ocr_readiness_summary: Counter[str] = Counter()
+        page_ocr_readiness_reason_summary: Counter[str] = Counter()
 
         for segment in page.get("segments", []):
             source_kind = segment.get("source_kind", "native")
             decision = page_strategies.get(segment.get("segment_id"), {})
             if source_kind == "ocr":
                 ocr_count += 1
+                readiness_status = decision.get("ocr_readiness_status")
+                readiness_reasons = decision.get("ocr_readiness_reasons", [])
+                if readiness_status:
+                    page_ocr_readiness_summary[readiness_status] += 1
+                    ocr_readiness_summary[readiness_status] += 1
+                    for reason in readiness_reasons:
+                        page_ocr_readiness_reason_summary[reason] += 1
+                        ocr_readiness_reason_summary[reason] += 1
             else:
                 native_count += 1
 
@@ -2553,6 +2675,8 @@ def build_ocr_page_translation_preview_report(
                     "translation_attempt_count": segment.get("translation_attempt_count", 0),
                     "translation_method_summary": segment.get("translation_method_summary", {}),
                     "recommendation": decision.get("recommendation"),
+                    "ocr_readiness_status": decision.get("ocr_readiness_status"),
+                    "ocr_readiness_reasons": decision.get("ocr_readiness_reasons", []),
                     "fit_risk": decision.get("fit_risk"),
                     "overflow_ratio": decision.get("overflow_ratio"),
                     "reasons": decision.get("reasons", []),
@@ -2569,6 +2693,8 @@ def build_ocr_page_translation_preview_report(
                 "segment_count": len(segments),
                 "native_segment_count": native_count,
                 "ocr_segment_count": ocr_count,
+                "ocr_readiness_summary": dict(page_ocr_readiness_summary),
+                "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
                 "segments": segments,
             }
         )
@@ -2588,6 +2714,8 @@ def build_ocr_page_translation_preview_report(
         "total_segments": total_segments,
         "total_native_segments": total_native_segments,
         "total_ocr_segments": total_ocr_segments,
+        "ocr_readiness_summary": dict(ocr_readiness_summary),
+        "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
         "pages": page_reports,
     }
 
@@ -2601,12 +2729,15 @@ def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
         f"Total segments: {report['total_segments']}",
         f"Native segments: {report['total_native_segments']}",
         f"OCR segments: {report['total_ocr_segments']}",
+        f"OCR readiness: {json.dumps(report.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness reasons: {json.dumps(report.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
     ]
 
     for page in report.get("pages", []):
         lines.append(
             f"Page {page['page_number']}: route={page['route']} "
-            f"native={page['native_segment_count']} ocr={page['ocr_segment_count']} segments={page['segment_count']}"
+            f"native={page['native_segment_count']} ocr={page['ocr_segment_count']} segments={page['segment_count']} "
+            f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
         for segment in page.get("segments", []):
             lines.append(
@@ -2617,6 +2748,7 @@ def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
             if segment.get("source_kind") == "ocr":
                 lines.append(
                     f"    ocr_strategy: recommendation={segment.get('recommendation')} "
+                    f"readiness={segment.get('ocr_readiness_status')} "
                     f"risk={segment.get('fit_risk')} ratio={segment.get('overflow_ratio')} "
                     f"reasons={', '.join(segment.get('reasons', []))}"
                 )

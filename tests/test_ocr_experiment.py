@@ -48,4 +48,8 @@ def test_run_ocr_experiment_writes_full_artifact_chain_with_mock_backend(tmp_pat
     assert result["ocr_review"]["status_summary"] == {"ok": 1}
     assert result["page_translation_preview"]["total_segments"] >= 2
     assert result["fusion_replacement_plan"]["total_replacements"] >= 2
+    assert result["fusion_replacement_plan"]["ocr_readiness_summary"]
+    assert result["ocr_strategy_report"]["ocr_readiness_summary"]
+    assert result["page_translation_preview"]["ocr_readiness_summary"]
+    assert result["diagnostics_summary"]["ocr_readiness_summary"]
     assert result["diagnostics_summary"]["render_decision_summary"]
