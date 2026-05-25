@@ -283,6 +283,11 @@ def test_run_document_preview_routes_image_pages_to_fusion(tmp_path: Path) -> No
     assert result["paths"]["routing_text"].exists()
     assert result["preview_result"]["paths"]["diagnostics_pdf"].exists()
     assert result["routing_report"]["route_summary"] == {"native_plus_ocr_candidates": 1}
+    preview_result = result["preview_result"]
+    assert preview_result["fusion_translation_preview"]["pages"][0]["segments"][0]["translation_method"] == "model"
+    assert preview_result["fusion_replacement_plan"]["pages"][0]["replacements"][0]["translation_method"] == "model"
+    assert preview_result["diagnostics_summary"]["render_decision_summary"]
+    assert preview_result["diagnostics_summary"]["pages"][0]["render_review_items"]
 
 
 def test_run_document_preview_routes_hybrid_page_with_decorative_and_text_images(tmp_path: Path) -> None:

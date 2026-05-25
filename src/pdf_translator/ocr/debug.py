@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import fitz
+import requests
 
 from pdf_translator.ocr.backend import run_ocr
 from pdf_translator.translate.placeholders import protect_text, restore_text
+from pdf_translator.translate.preview_fallbacks import translate_structural_text
 
 
 DEFAULT_OCR_ZOOM = 2.0
@@ -978,6 +981,45 @@ def write_native_ocr_fusion_plan(
     return json_path, text_path
 
 
+def _translation_method_for_methods(methods: list[str]) -> str:
+    unique_methods = {method for method in methods if method}
+    if not unique_methods:
+        return "skipped"
+    if len(unique_methods) == 1:
+        return methods[0]
+    return "mixed"
+
+
+def _translate_fusion_chunk(source_chunk: str, translate_text_fn) -> dict[str, Any]:
+    structural_translation = translate_structural_text(source_chunk)
+    if structural_translation is not None:
+        return {
+            "translated_text": structural_translation,
+            "status": "translated",
+            "translation_method": "structural_fallback",
+            "translation_attempt_count": 0,
+        }
+
+    try:
+        protected_text, placeholders = protect_text(source_chunk)
+        translated_raw = translate_text_fn(protected_text)
+        translated_chunk = restore_text(translated_raw, placeholders)
+    except requests.exceptions.Timeout:
+        return {
+            "translated_text": f"[TIMEOUT] {source_chunk.replace(chr(10), ' | ')}",
+            "status": "timeout",
+            "translation_method": "timeout",
+            "translation_attempt_count": 1,
+        }
+
+    return {
+        "translated_text": translated_chunk,
+        "status": "translated",
+        "translation_method": "model",
+        "translation_attempt_count": 1,
+    }
+
+
 
 def build_fusion_translation_preview_report(
     fusion_plan: dict[str, Any],
@@ -994,6 +1036,9 @@ def build_fusion_translation_preview_report(
             if not segment.get("translate", True):
                 translated_text = source_text
                 status = "skipped"
+                translation_method = "skipped"
+                translation_attempt_count = 0
+                translation_method_summary = {"skipped": 1}
                 translation_chunks: list[dict[str, Any]] = []
             else:
                 source_chunks = (
@@ -1004,24 +1049,42 @@ def build_fusion_translation_preview_report(
                 translated_chunks: list[str] = []
                 translation_chunks = []
                 for chunk_index, source_chunk in enumerate(source_chunks, start=1):
-                    protected_text, placeholders = protect_text(source_chunk)
-                    translated_raw = translate_text_fn(protected_text)
-                    translated_chunk = restore_text(translated_raw, placeholders)
+                    chunk_result = _translate_fusion_chunk(source_chunk, translate_text_fn)
+                    translated_chunk = chunk_result["translated_text"]
                     translated_chunks.append(translated_chunk)
                     translation_chunks.append(
                         {
                             "chunk_index": chunk_index,
                             "source_text": source_chunk,
                             "translated_text": translated_chunk,
+                            "status": chunk_result["status"],
+                            "translation_method": chunk_result["translation_method"],
+                            "translation_attempt_count": chunk_result["translation_attempt_count"],
                             "source_length": len(source_chunk),
                             "translated_length": len(translated_chunk),
                             "source_endswith_ellipsis": source_chunk.strip().endswith("..."),
                             "translated_endswith_ellipsis": translated_chunk.strip().endswith("..."),
                         }
                     )
-                translated_text = "\n\n".join(translated_chunks)
-                status = "translated"
-                translated_segments += 1
+                if translation_chunks:
+                    translated_text = "\n\n".join(translated_chunks)
+                    chunk_statuses = [chunk["status"] for chunk in translation_chunks]
+                    status = "timeout" if "timeout" in chunk_statuses else "translated"
+                    chunk_methods = [chunk["translation_method"] for chunk in translation_chunks]
+                    translation_method = _translation_method_for_methods(chunk_methods)
+                    translation_attempt_count = sum(
+                        int(chunk.get("translation_attempt_count", 0) or 0)
+                        for chunk in translation_chunks
+                    )
+                    translation_method_summary = dict(Counter(chunk_methods))
+                    if status == "translated":
+                        translated_segments += 1
+                else:
+                    translated_text = source_text
+                    status = "skipped"
+                    translation_method = "skipped"
+                    translation_attempt_count = 0
+                    translation_method_summary = {"skipped": 1}
 
             total_segments += 1
             segment_reports.append(
@@ -1035,6 +1098,9 @@ def build_fusion_translation_preview_report(
                     "translated_text": translated_text,
                     "translation_chunk_count": len(translation_chunks),
                     "translation_chunks": translation_chunks,
+                    "translation_method": translation_method,
+                    "translation_attempt_count": translation_attempt_count,
+                    "translation_method_summary": translation_method_summary,
                     "source_length": len(source_text),
                     "translated_length": len(translated_text),
                     "source_endswith_ellipsis": source_text.strip().endswith("..."),
@@ -1084,10 +1150,15 @@ def fusion_translation_preview_report_to_text(report: dict[str, Any]) -> str:
         )
         for segment in page.get("segments", [])[:5]:
             lines.append(
-                f"  {segment['segment_id']} [{segment['source_kind']}/{segment['status']}] {segment['source_ref']}"
+                f"  {segment['segment_id']} [{segment['source_kind']}/{segment['status']}] "
+                f"method={segment.get('translation_method', 'unknown')} "
+                f"attempts={segment.get('translation_attempt_count', 0)} {segment['source_ref']}"
             )
             if segment.get("translation_chunk_count", 0) > 1:
-                lines.append(f"    chunks: {segment['translation_chunk_count']}")
+                lines.append(
+                    f"    chunks: {segment['translation_chunk_count']} "
+                    f"methods={json.dumps(segment.get('translation_method_summary', {}), ensure_ascii=False, sort_keys=True)}"
+                )
             lines.append(f"    source: {_truncate_preview(segment.get('source_text', ''), 140)}")
             lines.append(f"    translated: {_truncate_preview(segment.get('translated_text', ''), 140)}")
 
@@ -1357,6 +1428,9 @@ def build_fusion_replacement_plan(
                     "edge_clipping_detected": bool(segment.get("edge_clipping_detected", False)),
                     "edge_clipping_line_count": int(segment.get("edge_clipping_line_count", 0) or 0),
                     "status": segment.get("status", "missing"),
+                    "translation_method": segment.get("translation_method", "unknown"),
+                    "translation_attempt_count": segment.get("translation_attempt_count", 0),
+                    "translation_method_summary": segment.get("translation_method_summary", {}),
                     "source_length": source_len,
                     "translated_length": translated_len,
                     "overflow_ratio": round(overflow_ratio, 2),
@@ -1402,6 +1476,8 @@ def fusion_replacement_plan_to_text(plan: dict[str, Any]) -> str:
             lines.append(
                 f"  {item['segment_id']} [{item['source_kind']}/{item['status']}] "
                 f"strategy={item['apply_strategy']} risk={item['fit_risk']} "
+                f"method={item.get('translation_method', 'unknown')} "
+                f"attempts={item.get('translation_attempt_count', 0)} "
                 f"ratio={item['overflow_ratio']}: {_truncate_preview(item.get('translated_text', ''), 160)}"
             )
 
@@ -1969,6 +2045,23 @@ def _render_ocr_layout_overlay(
     return rendered_count > 0
 
 
+def _fusion_render_review_item(
+    replacement: dict[str, Any],
+    render_decision: str,
+) -> dict[str, Any]:
+    return {
+        "segment_id": replacement.get("segment_id"),
+        "source_kind": replacement.get("source_kind", "native"),
+        "status": replacement.get("status", "unknown"),
+        "fit_risk": replacement.get("fit_risk", "unknown"),
+        "apply_strategy": replacement.get("apply_strategy", "unknown"),
+        "translation_method": replacement.get("translation_method", "unknown"),
+        "translation_attempt_count": replacement.get("translation_attempt_count", 0),
+        "render_decision": render_decision,
+        "text_preview": _truncate_preview(replacement.get("translated_text", ""), 160),
+    }
+
+
 def render_fusion_overlay_diagnostics(
     pdf_path: Path,
     fusion_replacement_plan: dict[str, Any],
@@ -1990,6 +2083,7 @@ def render_fusion_overlay_diagnostics(
     total_ocr_review_required = 0
     total_skipped = 0
     ocr_recommendation_summary: dict[str, int] = {}
+    render_decision_summary: Counter[str] = Counter()
     ocr_review_appendix_entries: list[dict[str, Any]] = []
 
     for page_report in fusion_replacement_plan.get("pages", []):
@@ -2001,11 +2095,19 @@ def render_fusion_overlay_diagnostics(
         ocr_annotated = 0
         skipped = 0
         page_ocr_recommendations: dict[str, int] = {}
+        page_render_decision_summary: Counter[str] = Counter()
+        render_review_items: list[dict[str, Any]] = []
+
+        def record_render_decision(replacement: dict[str, Any], render_decision: str) -> None:
+            page_render_decision_summary[render_decision] += 1
+            render_decision_summary[render_decision] += 1
+            render_review_items.append(_fusion_render_review_item(replacement, render_decision))
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
             rect = _rect_from_bbox(replacement.get("bbox", {}))
             if rect is None or rect.is_empty:
+                record_render_decision(replacement, "skipped_missing_bbox")
                 skipped += 1
                 total_skipped += 1
                 continue
@@ -2014,14 +2116,20 @@ def render_fusion_overlay_diagnostics(
             status = replacement.get("status")
             fit_risk = replacement.get("fit_risk")
 
+            if status != "translated":
+                record_render_decision(replacement, "skipped_status")
+                skipped += 1
+                total_skipped += 1
+                continue
+
             if (
                 strategy == "native_overlay_candidate"
-                and status == "translated"
                 and (
                     fit_risk in allowed_native_fit_risks
                     or replacement.get("role") == "table_header_cell"
                 )
             ):
+                record_render_decision(replacement, "applied_native_overlay")
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 translated_text = replacement.get("translated_text", "")
 
@@ -2055,7 +2163,13 @@ def render_fusion_overlay_diagnostics(
                 total_native_applied += 1
                 continue
 
-            if strategy == "ocr_overlay_candidate" and status == "translated":
+            if strategy == "native_overlay_candidate":
+                record_render_decision(replacement, "skipped_native_fit_risk")
+                skipped += 1
+                total_skipped += 1
+                continue
+
+            if strategy == "ocr_overlay_candidate":
                 recommendation, reasons = _recommend_ocr_overlay_strategy(replacement)
                 ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
@@ -2064,6 +2178,7 @@ def render_fusion_overlay_diagnostics(
                 confidence = decision.get("confidence", "medium")
 
                 if confidence in {"high", "medium"}:
+                    record_render_decision(replacement, "applied_ocr_overlay")
                     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
                     rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
@@ -2087,6 +2202,7 @@ def render_fusion_overlay_diagnostics(
                     page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
                     ocr_annotated += 1
                     total_ocr_annotated += 1
+                    total_ocr_overlay_applied += 1
                     continue
 
             if strategy in {"ocr_side_annotation", "ocr_review_required"}:
@@ -2100,6 +2216,12 @@ def render_fusion_overlay_diagnostics(
                 else:
                     total_ocr_review_required += 1
                 page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
+                render_decision = (
+                    "annotated_ocr_review"
+                    if recommendation == "manual_review"
+                    else "annotated_ocr_side"
+                )
+                record_render_decision(replacement, render_decision)
                 page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
                 page.insert_text(
@@ -2128,6 +2250,7 @@ def render_fusion_overlay_diagnostics(
                 total_ocr_annotated += 1
                 continue
 
+            record_render_decision(replacement, "skipped_apply_strategy")
             skipped += 1
             total_skipped += 1
 
@@ -2139,6 +2262,8 @@ def render_fusion_overlay_diagnostics(
                 "ocr_annotated": ocr_annotated,
                 "ocr_recommendations": page_ocr_recommendations,
                 "skipped": skipped,
+                "render_decision_summary": dict(page_render_decision_summary),
+                "render_review_items": render_review_items,
             }
         )
 
@@ -2173,6 +2298,7 @@ def render_fusion_overlay_diagnostics(
         "total_ocr_side_annotated": total_ocr_side_annotated,
         "total_ocr_review_required": total_ocr_review_required,
         "ocr_recommendation_summary": ocr_recommendation_summary,
+        "render_decision_summary": dict(render_decision_summary),
         "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),
@@ -2191,6 +2317,7 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
         f"Total native applied: {summary['total_native_applied']}",
         f"Total OCR annotated: {summary['total_ocr_annotated']}",
         f"OCR recommendations: {json.dumps(summary.get('ocr_recommendation_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
         f"Total skipped: {summary['total_skipped']}",
     ]
@@ -2200,8 +2327,21 @@ def fusion_overlay_diagnostics_summary_to_text(summary: dict[str, Any]) -> str:
             f"Page {page['page_number']}: native_applied={page['native_applied']} "
             f"ocr_annotated={page['ocr_annotated']} skipped={page['skipped']} "
             f"considered={page['considered_replacements']} "
-            f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)}"
+            f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)} "
+            f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
+        for review_item in page.get("render_review_items", [])[:5]:
+            lines.append(
+                f"  render {review_item.get('segment_id')}: "
+                f"decision={review_item.get('render_decision')} "
+                f"kind={review_item.get('source_kind')} "
+                f"status={review_item.get('status')} "
+                f"risk={review_item.get('fit_risk')} "
+                f"strategy={review_item.get('apply_strategy')} "
+                f"method={review_item.get('translation_method', 'unknown')} "
+                f"attempts={review_item.get('translation_attempt_count', 0)} "
+                f"text={review_item.get('text_preview', '')}"
+            )
 
     return "\n".join(lines)
 
@@ -2402,6 +2542,9 @@ def build_ocr_page_translation_preview_report(
                     "source_text": segment.get("source_text", ""),
                     "translated_text": segment.get("translated_text", ""),
                     "translation_chunk_count": segment.get("translation_chunk_count", 0),
+                    "translation_method": segment.get("translation_method", "unknown"),
+                    "translation_attempt_count": segment.get("translation_attempt_count", 0),
+                    "translation_method_summary": segment.get("translation_method_summary", {}),
                     "recommendation": decision.get("recommendation"),
                     "fit_risk": decision.get("fit_risk"),
                     "overflow_ratio": decision.get("overflow_ratio"),
@@ -2461,7 +2604,8 @@ def ocr_page_translation_preview_report_to_text(report: dict[str, Any]) -> str:
         for segment in page.get("segments", []):
             lines.append(
                 f"  {segment['segment_id']} kind={segment['source_kind']} "
-                f"status={segment['status']} {segment['source_ref']}"
+                f"status={segment['status']} method={segment.get('translation_method', 'unknown')} "
+                f"attempts={segment.get('translation_attempt_count', 0)} {segment['source_ref']}"
             )
             if segment.get("source_kind") == "ocr":
                 lines.append(

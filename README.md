@@ -272,6 +272,7 @@ It currently supports:
 - building a mixed replacement plan with explicit strategies
 - recommending whether OCR output should remain a side annotation or become a future image-overlay candidate
 - rendering a diagnostic PDF that applies native replacements and annotates pending OCR regions
+- explaining mixed native/OCR translation methods and render decisions in debug summaries
 
 The one-command workflow is:
 
@@ -298,6 +299,7 @@ Current OCR boundary:
 
 - OCR text can be extracted, reviewed, translated, and included in diagnostic artifacts
 - native text replacements can still be previewed through the overlay path
+- fusion/OCR summaries now expose translation method, attempt count, and per-replacement render decisions
 - OCR regions are not yet rewritten inside the scanned image itself
 - long OCR translations are currently recommended as side annotations when they do not fit safely into the source image region
 

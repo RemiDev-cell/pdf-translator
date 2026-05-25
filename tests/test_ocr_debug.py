@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import fitz
+import requests
 
 from pdf_translator.extract.pymupdf_extract import extract_document
 from pdf_translator.ocr.debug import (
@@ -622,6 +623,119 @@ def test_build_fusion_translation_preview_report_translates_mix_of_native_and_oc
     assert text_path.exists()
 
 
+def test_build_fusion_translation_preview_report_uses_structural_fallback_before_model() -> None:
+    fusion_plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "segments": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "text": "étape 1",
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    def should_not_run(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    report = build_fusion_translation_preview_report(fusion_plan, should_not_run)
+    segment = report["pages"][0]["segments"][0]
+    chunk = segment["translation_chunks"][0]
+
+    assert segment["status"] == "translated"
+    assert segment["translated_text"] == "step 1"
+    assert segment["translation_method"] == "structural_fallback"
+    assert segment["translation_attempt_count"] == 0
+    assert segment["translation_method_summary"] == {"structural_fallback": 1}
+    assert chunk["status"] == "translated"
+    assert chunk["translation_method"] == "structural_fallback"
+
+
+def test_build_fusion_translation_preview_report_keeps_long_unhandled_timeout_visible() -> None:
+    fusion_plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "segments": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "text": "Ce texte OCR demande une vraie traduction et ne correspond a aucun fallback fiable.",
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    def always_timeout(_: str) -> str:
+        raise requests.exceptions.Timeout()
+
+    report = build_fusion_translation_preview_report(fusion_plan, always_timeout)
+    segment = report["pages"][0]["segments"][0]
+    chunk = segment["translation_chunks"][0]
+
+    assert report["translated_segments"] == 0
+    assert segment["status"] == "timeout"
+    assert segment["translation_method"] == "timeout"
+    assert segment["translation_attempt_count"] == 1
+    assert segment["translation_method_summary"] == {"timeout": 1}
+    assert segment["translated_text"].startswith("[TIMEOUT]")
+    assert chunk["status"] == "timeout"
+    assert chunk["translation_method"] == "timeout"
+    assert chunk["translation_attempt_count"] == 1
+
+
+def test_build_fusion_translation_preview_report_marks_mixed_chunk_methods() -> None:
+    long_tail = "mot " * 180
+    fusion_plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "route": "ocr_only",
+                "segments": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "source_ref": "ocr:0",
+                        "text": f"étape 1\n\n{long_tail}",
+                        "translate": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    seen_chunks: list[str] = []
+
+    def fake_translate(text: str) -> str:
+        seen_chunks.append(text)
+        return f"EN:{text[:12]}"
+
+    report = build_fusion_translation_preview_report(fusion_plan, fake_translate)
+    segment = report["pages"][0]["segments"][0]
+
+    assert segment["status"] == "translated"
+    assert segment["translation_chunk_count"] > 1
+    assert segment["translation_method"] == "mixed"
+    assert segment["translation_method_summary"]["structural_fallback"] == 1
+    assert segment["translation_method_summary"]["model"] >= 1
+    assert segment["translation_attempt_count"] == len(seen_chunks)
+    assert segment["translated_text"].startswith("step 1")
+
+
 def test_build_fusion_translation_preview_report_chunks_long_ocr_text() -> None:
     long_ocr_text = (
         "Premier paragraphe OCR avec assez de contenu pour commencer le bloc. "
@@ -747,6 +861,9 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
                         "source_ref": "block:0",
                         "role": "content",
                         "status": "translated",
+                        "translation_method": "model",
+                        "translation_attempt_count": 1,
+                        "translation_method_summary": {"model": 1},
                         "source_text": "Bonjour le monde",
                         "translated_text": "Hello world",
                         "bbox": {"x0": 10, "y0": 20, "x1": 120, "y1": 50},
@@ -757,6 +874,9 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
                         "source_ref": "ocr:0",
                         "role": "ocr_region",
                         "status": "translated",
+                        "translation_method": "structural_fallback",
+                        "translation_attempt_count": 0,
+                        "translation_method_summary": {"structural_fallback": 1},
                         "source_text": "Texte OCR",
                         "translated_text": "OCR text",
                         "bbox": {"x0": 10, "y0": 70, "x1": 120, "y1": 110},
@@ -777,10 +897,14 @@ def test_build_fusion_replacement_plan_distinguishes_native_and_ocr_strategies(t
     }
     assert plan["pages"][0]["replacements"][0]["fit_risk"] == "low"
     assert plan["pages"][0]["replacements"][1]["fit_risk"] == "low"
+    assert plan["pages"][0]["replacements"][0]["translation_method"] == "model"
+    assert plan["pages"][0]["replacements"][1]["translation_method"] == "structural_fallback"
+    assert plan["pages"][0]["replacements"][1]["translation_attempt_count"] == 0
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["bbox_area"] == 4400
     assert plan["pages"][0]["replacements"][1]["fit_diagnostics"]["flags"] == []
     assert "P1N0 [native/translated]" in text
     assert "strategy=ocr_overlay_candidate" in text
+    assert "method=structural_fallback" in text
     assert json_path.exists()
     assert text_path.exists()
 
@@ -840,10 +964,24 @@ def test_render_fusion_overlay_diagnostics_writes_pdf_png_and_summary(tmp_path: 
     assert summary_path.exists()
     assert summary["total_native_applied"] == 1
     assert summary["total_ocr_annotated"] == 1
+    assert summary["render_decision_summary"] == {
+        "applied_native_overlay": 1,
+        "applied_ocr_overlay": 1,
+    }
+    assert summary["pages"][0]["render_decision_summary"] == {
+        "applied_native_overlay": 1,
+        "applied_ocr_overlay": 1,
+    }
+    assert [
+        item["render_decision"]
+        for item in summary["pages"][0]["render_review_items"]
+    ] == ["applied_native_overlay", "applied_ocr_overlay"]
     assert summary["ocr_recommendation_summary"] == {"side_annotation_recommended": 1}
     assert summary["pages"][0]["ocr_recommendations"] == {"side_annotation_recommended": 1}
     assert "Total OCR annotated: 1" in text
     assert 'OCR recommendations: {"side_annotation_recommended": 1}' in text
+    assert "Render decisions:" in text
+    assert "decision=applied_ocr_overlay" in text
 
 
 def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(tmp_path: Path) -> None:
@@ -892,8 +1030,10 @@ def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(t
     assert len(image_paths) == 2
     assert summary["total_ocr_review_required"] == 1
     assert summary["ocr_recommendation_summary"] == {"manual_review": 1}
+    assert summary["render_decision_summary"] == {"annotated_ocr_review": 1}
     assert summary["ocr_review_appendix_page_count"] == 1
     assert "OCR review appendix pages: 1" in text
+    assert "decision=annotated_ocr_review" in text
     rendered = fitz.open(pdf_output_path)
     try:
         assert rendered.page_count == 2
@@ -901,6 +1041,101 @@ def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(t
         assert "crop_constrained_edges=right" in rendered[1].get_text()
     finally:
         rendered.close()
+
+
+def test_render_fusion_overlay_diagnostics_explains_skips_and_side_annotations(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "source-decisions.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=260, height=260)
+    page.insert_text((24, 42), "Native and OCR diagnostics")
+    doc.save(pdf_path)
+    doc.close()
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1N0",
+                        "source_kind": "native",
+                        "apply_strategy": "native_overlay_candidate",
+                        "status": "timeout",
+                        "translation_method": "timeout",
+                        "translation_attempt_count": 1,
+                        "fit_risk": "low",
+                        "bbox": {"x0": 20, "y0": 26, "x1": 130, "y1": 54},
+                        "translated_text": "[TIMEOUT] Bonjour",
+                    },
+                    {
+                        "segment_id": "P1N1",
+                        "source_kind": "native",
+                        "apply_strategy": "native_overlay_candidate",
+                        "status": "translated",
+                        "translation_method": "model",
+                        "translation_attempt_count": 1,
+                        "fit_risk": "high",
+                        "bbox": {"x0": 20, "y0": 60, "x1": 130, "y1": 80},
+                        "translated_text": "Too long for this native region",
+                    },
+                    {
+                        "segment_id": "P1N2",
+                        "source_kind": "native",
+                        "apply_strategy": "native_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "bbox": {},
+                        "translated_text": "Missing bbox",
+                    },
+                    {
+                        "segment_id": "P1N3",
+                        "source_kind": "native",
+                        "apply_strategy": "unknown_strategy",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "bbox": {"x0": 20, "y0": 86, "x1": 130, "y1": 106},
+                        "translated_text": "Unknown strategy",
+                    },
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_side_annotation",
+                        "status": "translated",
+                        "translation_method": "model",
+                        "translation_attempt_count": 1,
+                        "fit_risk": "high",
+                        "overflow_ratio": 2.4,
+                        "fit_diagnostics": {"flags": ["long_translation"]},
+                        "bbox": {"x0": 40, "y0": 120, "x1": 210, "y1": 185},
+                        "source_text": "Texte OCR",
+                        "translated_text": "This OCR text is intentionally better kept as a visible side annotation.",
+                    },
+                ],
+            }
+        ],
+    }
+
+    _, summary, _ = render_fusion_overlay_diagnostics(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="decision_overlay",
+    )
+    text = fusion_overlay_diagnostics_summary_to_text(summary)
+
+    assert summary["total_skipped"] == 4
+    assert summary["total_ocr_annotated"] == 1
+    assert summary["render_decision_summary"] == {
+        "skipped_status": 1,
+        "skipped_native_fit_risk": 1,
+        "skipped_missing_bbox": 1,
+        "skipped_apply_strategy": 1,
+        "annotated_ocr_side": 1,
+    }
+    assert summary["pages"][0]["render_review_items"][0]["translation_method"] == "timeout"
+    assert "decision=skipped_status" in text
+    assert "decision=annotated_ocr_side" in text
 
 
 def test_build_ocr_overlay_strategy_report_recommends_by_size_and_status(tmp_path: Path) -> None:
