@@ -1295,10 +1295,87 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert summary["total_ocr_inplace_applied"] == 1
     assert summary["total_ocr_annotated"] == 0
     assert summary["render_decision_summary"] == {"applied_ocr_inplace": 1}
+    assert summary["ocr_render_mode_summary"] == {"bbox_textbox": 1}
+    assert summary["pages"][0]["ocr_render_mode_summary"] == {"bbox_textbox": 1}
     assert summary["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
+    ready_item = summary["pages"][0]["render_review_items"][0]
+    assert ready_item["ocr_render_mode"] == "bbox_textbox"
+    assert ready_item["rendered_with_layout"] is False
+    assert ready_item["ocr_layout_line_count"] == 0
+    assert ready_item["ocr_layout_rendered_block_count"] == 0
+    assert ready_item["ocr_layout_fallback_used"] is True
     assert "decision=applied_ocr_inplace" in text
+    assert 'OCR render modes: {"bbox_textbox": 1}' in text
+    assert "ocr_render_mode=bbox_textbox" in text
     assert "Total OCR in-place applied: 1" in text
     assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) > 600
+
+
+def test_render_ocr_inplace_prototype_reports_layout_tsv_mode(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-ready-layout-source.pdf"
+    _write_black_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "crop_bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "source_text": "Texte OCR\nsur deux lignes",
+                        "translated_text": "OCR text\non two lines",
+                        "ocr_readiness_status": "ready_for_image_overlay",
+                        "ocr_readiness_reasons": ["manual_readiness_override"],
+                        "ocr_layout": [
+                            {
+                                "line_index": 0,
+                                "block_num": 1,
+                                "par_num": 1,
+                                "text": "Texte OCR",
+                                "bbox_px": {"x0": 0, "y0": 0, "x1": 360, "y1": 80},
+                            },
+                            {
+                                "line_index": 1,
+                                "block_num": 1,
+                                "par_num": 1,
+                                "text": "sur deux lignes",
+                                "bbox_px": {"x0": 0, "y0": 90, "x1": 360, "y1": 180},
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    _, summary, _ = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_layout",
+    )
+    text = ocr_inplace_prototype_summary_to_text(summary)
+
+    assert summary["render_decision_summary"] == {"applied_ocr_inplace": 1}
+    assert summary["ocr_render_mode_summary"] == {"layout_tsv": 1}
+    item = summary["pages"][0]["render_review_items"][0]
+    assert item["ocr_render_mode"] == "layout_tsv"
+    assert item["rendered_with_layout"] is True
+    assert item["ocr_layout_line_count"] == 2
+    assert item["ocr_layout_block_count"] == 1
+    assert item["ocr_layout_rendered_line_count"] == 2
+    assert item["ocr_layout_fallback_used"] is False
+    assert 'OCR render modes: {"layout_tsv": 1}' in text
+    assert "ocr_render_mode=layout_tsv" in text
 
 
 def test_render_ocr_inplace_prototype_keeps_side_annotation_off_region(tmp_path: Path) -> None:
@@ -1342,6 +1419,8 @@ def test_render_ocr_inplace_prototype_keeps_side_annotation_off_region(tmp_path:
     assert summary["total_ocr_inplace_applied"] == 0
     assert summary["total_ocr_annotated"] == 1
     assert summary["render_decision_summary"] == {"annotated_ocr_side": 1}
+    assert summary["ocr_render_mode_summary"] == {"side_annotation": 1}
+    assert summary["pages"][0]["render_review_items"][0]["ocr_render_mode"] == "side_annotation"
     assert summary["ocr_recommendation_summary"] == {"image_overlay_candidate": 1}
     assert summary["ocr_readiness_summary"] == {"side_annotation_review": 1}
     assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) < 30
@@ -1388,6 +1467,8 @@ def test_render_ocr_inplace_prototype_keeps_blocked_ocr_in_review_appendix(tmp_p
     assert summary["total_ocr_inplace_applied"] == 0
     assert summary["total_ocr_review_required"] == 1
     assert summary["render_decision_summary"] == {"annotated_ocr_review": 1}
+    assert summary["ocr_render_mode_summary"] == {"review_appendix": 1}
+    assert summary["pages"][0]["render_review_items"][0]["ocr_render_mode"] == "review_appendix"
     assert summary["ocr_readiness_summary"] == {"blocked": 1}
     assert summary["ocr_review_appendix_page_count"] == 1
     assert "decision=annotated_ocr_review" in text
@@ -1438,6 +1519,8 @@ def test_render_ocr_inplace_prototype_skips_missing_ocr_bbox(tmp_path: Path) -> 
     assert summary["total_skipped"] == 1
     assert summary["total_ocr_inplace_applied"] == 0
     assert summary["render_decision_summary"] == {"skipped_missing_bbox": 1}
+    assert summary["ocr_render_mode_summary"] == {"skipped": 1}
+    assert summary["pages"][0]["render_review_items"][0]["ocr_render_mode"] == "skipped"
     assert summary["ocr_readiness_summary"] == {"blocked": 1}
 
 

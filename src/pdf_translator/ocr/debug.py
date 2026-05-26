@@ -1903,22 +1903,41 @@ def _fit_ocr_textbox_font_size(
     finally:
         doc.close()
 
+
 def _render_ocr_layout_overlay(
     page: fitz.Page,
     rect: fitz.Rect,
     replacement: dict[str, Any],
-) -> bool:
+) -> dict[str, Any]:
     ocr_layout = _filter_ocr_layout_text_lines(replacement.get("ocr_layout") or [])
     if not ocr_layout:
-        return False
+        return {
+            "rendered_with_layout": False,
+            "ocr_layout_line_count": 0,
+            "ocr_layout_block_count": 0,
+            "ocr_layout_rendered_block_count": 0,
+            "ocr_layout_rendered_line_count": 0,
+        }
 
     crop_rect = _rect_from_bbox(replacement.get("crop_bbox", {})) or rect
     crop_width_px = crop_rect.width * DEFAULT_OCR_ZOOM
     crop_height_px = crop_rect.height * DEFAULT_OCR_ZOOM
     if crop_width_px <= 0 or crop_height_px <= 0:
-        return False
+        return {
+            "rendered_with_layout": False,
+            "ocr_layout_line_count": len(ocr_layout),
+            "ocr_layout_block_count": 0,
+            "ocr_layout_rendered_block_count": 0,
+            "ocr_layout_rendered_line_count": 0,
+        }
 
     blocks = _group_ocr_layout_blocks(ocr_layout)
+    layout_diagnostics = {
+        "ocr_layout_line_count": len(ocr_layout),
+        "ocr_layout_block_count": len(blocks),
+        "ocr_layout_rendered_block_count": 0,
+        "ocr_layout_rendered_line_count": 0,
+    }
 
     # Heuristic: if many lines → render by OCR blocks, preserving a short
     # first title line separately from the body paragraph.
@@ -1979,7 +1998,11 @@ def _render_ocr_layout_overlay(
                 )
                 rendered_blocks += 1
 
-            return rendered_blocks > 0
+            return {
+                **layout_diagnostics,
+                "rendered_with_layout": rendered_blocks > 0,
+                "ocr_layout_rendered_block_count": rendered_blocks,
+            }
 
         render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
         line_offset = 0
@@ -2016,7 +2039,11 @@ def _render_ocr_layout_overlay(
             )
             rendered_blocks += 1
 
-        return rendered_blocks > 0
+        return {
+            **layout_diagnostics,
+            "rendered_with_layout": rendered_blocks > 0,
+            "ocr_layout_rendered_block_count": rendered_blocks,
+        }
 
     render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
 
@@ -2064,17 +2091,22 @@ def _render_ocr_layout_overlay(
         )
         rendered_count += 1
 
-    return rendered_count > 0
+    return {
+        **layout_diagnostics,
+        "rendered_with_layout": rendered_count > 0,
+        "ocr_layout_rendered_line_count": rendered_count,
+    }
 
 
 def _apply_ocr_inplace_overlay(
     page: fitz.Page,
     rect: fitz.Rect,
     replacement: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
-    rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
+    layout_diagnostics = _render_ocr_layout_overlay(page, rect, replacement)
+    rendered_with_layout = bool(layout_diagnostics.get("rendered_with_layout", False))
 
     if not rendered_with_layout:
         page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
@@ -2092,13 +2124,21 @@ def _apply_ocr_inplace_overlay(
             color=(0, 0, 0),
         )
     page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+    return {
+        **layout_diagnostics,
+        "ocr_render_mode": "layout_tsv" if rendered_with_layout else "bbox_textbox",
+        "ocr_layout_fallback_used": not rendered_with_layout,
+        "bbox": replacement.get("bbox", {}),
+        "crop_bbox": replacement.get("crop_bbox", replacement.get("bbox", {})),
+    }
 
 
 def _fusion_render_review_item(
     replacement: dict[str, Any],
     render_decision: str,
+    render_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    item = {
         "segment_id": replacement.get("segment_id"),
         "source_kind": replacement.get("source_kind", "native"),
         "status": replacement.get("status", "unknown"),
@@ -2111,8 +2151,13 @@ def _fusion_render_review_item(
         "translation_method": replacement.get("translation_method", "unknown"),
         "translation_attempt_count": replacement.get("translation_attempt_count", 0),
         "render_decision": render_decision,
+        "bbox": replacement.get("bbox", {}),
+        "crop_bbox": replacement.get("crop_bbox", replacement.get("bbox", {})),
         "text_preview": _truncate_preview(replacement.get("translated_text", ""), 160),
     }
+    if render_metadata:
+        item.update(render_metadata)
+    return item
 
 
 def render_fusion_overlay_diagnostics(
@@ -2155,10 +2200,20 @@ def render_fusion_overlay_diagnostics(
         page_render_decision_summary: Counter[str] = Counter()
         render_review_items: list[dict[str, Any]] = []
 
-        def record_render_decision(replacement: dict[str, Any], render_decision: str) -> None:
+        def record_render_decision(
+            replacement: dict[str, Any],
+            render_decision: str,
+            render_metadata: dict[str, Any] | None = None,
+        ) -> None:
             page_render_decision_summary[render_decision] += 1
             render_decision_summary[render_decision] += 1
-            render_review_items.append(_fusion_render_review_item(replacement, render_decision))
+            render_review_items.append(
+                _fusion_render_review_item(
+                    replacement,
+                    render_decision,
+                    render_metadata,
+                )
+            )
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
@@ -2427,6 +2482,7 @@ def render_ocr_inplace_prototype(
     ocr_readiness_summary: Counter[str] = Counter()
     ocr_readiness_reason_summary: Counter[str] = Counter()
     render_decision_summary: Counter[str] = Counter()
+    ocr_render_mode_summary: Counter[str] = Counter()
     ocr_review_appendix_entries: list[dict[str, Any]] = []
 
     for page_report in fusion_replacement_plan.get("pages", []):
@@ -2442,12 +2498,28 @@ def render_ocr_inplace_prototype(
         page_ocr_readiness_summary: Counter[str] = Counter()
         page_ocr_readiness_reason_summary: Counter[str] = Counter()
         page_render_decision_summary: Counter[str] = Counter()
+        page_ocr_render_mode_summary: Counter[str] = Counter()
         render_review_items: list[dict[str, Any]] = []
 
-        def record_render_decision(replacement: dict[str, Any], render_decision: str) -> None:
+        def record_render_decision(
+            replacement: dict[str, Any],
+            render_decision: str,
+            render_metadata: dict[str, Any] | None = None,
+        ) -> None:
             page_render_decision_summary[render_decision] += 1
             render_decision_summary[render_decision] += 1
-            render_review_items.append(_fusion_render_review_item(replacement, render_decision))
+            if replacement.get("source_kind") == "ocr" and render_metadata:
+                render_mode = render_metadata.get("ocr_render_mode")
+                if render_mode:
+                    page_ocr_render_mode_summary[render_mode] += 1
+                    ocr_render_mode_summary[render_mode] += 1
+            render_review_items.append(
+                _fusion_render_review_item(
+                    replacement,
+                    render_decision,
+                    render_metadata,
+                )
+            )
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
@@ -2470,7 +2542,11 @@ def render_ocr_inplace_prototype(
 
             rect = _rect_from_bbox(replacement.get("bbox", {}))
             if rect is None or rect.is_empty:
-                record_render_decision(replacement, "skipped_missing_bbox")
+                record_render_decision(
+                    replacement,
+                    "skipped_missing_bbox",
+                    {"ocr_render_mode": "skipped"} if replacement.get("source_kind") == "ocr" else None,
+                )
                 skipped += 1
                 total_skipped += 1
                 continue
@@ -2538,8 +2614,12 @@ def render_ocr_inplace_prototype(
                 readiness_status = replacement.get("ocr_readiness_status", "manual_review")
 
                 if readiness_status == "ready_for_image_overlay":
-                    record_render_decision(replacement, "applied_ocr_inplace")
-                    _apply_ocr_inplace_overlay(page, rect, replacement)
+                    render_metadata = _apply_ocr_inplace_overlay(page, rect, replacement)
+                    record_render_decision(
+                        replacement,
+                        "applied_ocr_inplace",
+                        render_metadata,
+                    )
                     ocr_inplace_applied += 1
                     total_ocr_inplace_applied += 1
                     continue
@@ -2549,7 +2629,23 @@ def render_ocr_inplace_prototype(
                     if readiness_status == "side_annotation_review"
                     else "annotated_ocr_review"
                 )
-                record_render_decision(replacement, render_decision)
+                ocr_layout_lines = _filter_ocr_layout_text_lines(replacement.get("ocr_layout") or [])
+                render_metadata = {
+                    "ocr_render_mode": (
+                        "side_annotation"
+                        if render_decision == "annotated_ocr_side"
+                        else "review_appendix"
+                    ),
+                    "rendered_with_layout": False,
+                    "ocr_layout_line_count": len(ocr_layout_lines),
+                    "ocr_layout_block_count": len(_group_ocr_layout_blocks(ocr_layout_lines)),
+                    "ocr_layout_rendered_block_count": 0,
+                    "ocr_layout_rendered_line_count": 0,
+                    "ocr_layout_fallback_used": False,
+                    "bbox": replacement.get("bbox", {}),
+                    "crop_bbox": replacement.get("crop_bbox", replacement.get("bbox", {})),
+                }
+                record_render_decision(replacement, render_decision, render_metadata)
                 page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
                 page.insert_text(
@@ -2596,6 +2692,7 @@ def render_ocr_inplace_prototype(
                 "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
                 "skipped": skipped,
                 "render_decision_summary": dict(page_render_decision_summary),
+                "ocr_render_mode_summary": dict(page_ocr_render_mode_summary),
                 "render_review_items": render_review_items,
             }
         )
@@ -2634,6 +2731,7 @@ def render_ocr_inplace_prototype(
         "ocr_readiness_summary": dict(ocr_readiness_summary),
         "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
         "render_decision_summary": dict(render_decision_summary),
+        "ocr_render_mode_summary": dict(ocr_render_mode_summary),
         "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),
@@ -2656,6 +2754,7 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         f"OCR readiness: {json.dumps(summary.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR readiness reasons: {json.dumps(summary.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR render modes: {json.dumps(summary.get('ocr_render_mode_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
         f"Total skipped: {summary['total_skipped']}",
     ]
@@ -2668,10 +2767,11 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
             f"considered={page['considered_replacements']} "
             f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)} "
             f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)} "
-            f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
+            f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)} "
+            f"ocr_render_modes={json.dumps(page.get('ocr_render_mode_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
         for review_item in page.get("render_review_items", [])[:5]:
-            lines.append(
+            render_line = (
                 f"  render {review_item.get('segment_id')}: "
                 f"decision={review_item.get('render_decision')} "
                 f"kind={review_item.get('source_kind')} "
@@ -2682,8 +2782,21 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
                 f"readiness={review_item.get('ocr_readiness_status') or 'n/a'} "
                 f"method={review_item.get('translation_method', 'unknown')} "
                 f"attempts={review_item.get('translation_attempt_count', 0)} "
-                f"text={review_item.get('text_preview', '')}"
             )
+            if review_item.get("source_kind") == "ocr":
+                render_line += (
+                    f"ocr_render_mode={review_item.get('ocr_render_mode') or 'n/a'} "
+                    f"rendered_with_layout={review_item.get('rendered_with_layout', False)} "
+                    f"layout_lines={review_item.get('ocr_layout_line_count', 0)} "
+                    f"layout_blocks={review_item.get('ocr_layout_block_count', 0)} "
+                    f"rendered_blocks={review_item.get('ocr_layout_rendered_block_count', 0)} "
+                    f"rendered_lines={review_item.get('ocr_layout_rendered_line_count', 0)} "
+                    f"fallback={review_item.get('ocr_layout_fallback_used', False)} "
+                    f"bbox={json.dumps(review_item.get('bbox', {}), ensure_ascii=False, sort_keys=True)} "
+                    f"crop_bbox={json.dumps(review_item.get('crop_bbox', {}), ensure_ascii=False, sort_keys=True)} "
+                )
+            render_line += f"text={review_item.get('text_preview', '')}"
+            lines.append(render_line)
 
     return "\n".join(lines)
 

@@ -186,6 +186,7 @@ def _format_probe_line(
     return (
         f"[OK] {name} source={source_mode}{route_text} "
         f"readiness={json.dumps(summary.get('ocr_readiness_summary', {}), sort_keys=True)} "
+        f"render_modes={json.dumps(summary.get('ocr_render_mode_summary', {}), sort_keys=True)} "
         f"decisions={json.dumps(summary.get('render_decision_summary', {}), sort_keys=True)} "
         f"pdf={pdf_path} summary={summary_path} first_image={first_image}"
     )
@@ -290,6 +291,7 @@ def _run_local_essai_probe(
     for page in summary.get("pages", []):
         print(
             f"  page={page.get('page_number')} readiness={page.get('ocr_readiness_summary', {})} "
+            f"render_modes={page.get('ocr_render_mode_summary', {})} "
             f"decisions={page.get('render_decision_summary', {})}"
         )
         for item in page.get("render_review_items", []):
@@ -298,7 +300,12 @@ def _run_local_essai_probe(
                     f"    {item.get('segment_id')} decision={item.get('render_decision')} "
                     f"readiness={item.get('ocr_readiness_status')} "
                     f"recommendation={item.get('ocr_recommendation')} "
-                    f"risk={item.get('fit_risk')}"
+                    f"risk={item.get('fit_risk')} "
+                    f"mode={item.get('ocr_render_mode')} "
+                    f"layout={item.get('rendered_with_layout', False)} "
+                    f"layout_lines={item.get('ocr_layout_line_count', 0)} "
+                    f"rendered_blocks={item.get('ocr_layout_rendered_block_count', 0)} "
+                    f"fallback={item.get('ocr_layout_fallback_used', False)}"
                 )
     return errors
 
@@ -309,8 +316,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--backend",
-        default="mock",
-        help="OCR backend for local-input probes: mock, tesseract, auto, etc.",
+        default="tesseract",
+        help="OCR backend for local-input probes. Use mock only for quick debugging.",
     )
     parser.add_argument(
         "--include-local-inputs",
@@ -320,8 +327,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--translator",
         choices=("mock", "configured"),
-        default="mock",
-        help="Translation function for generated local-input plans.",
+        default="configured",
+        help="Translation function for generated local-input plans. Use mock only for quick debugging.",
     )
     parser.add_argument(
         "--output-dir",
@@ -338,6 +345,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Probe output dir: {output_dir}")
+    print(f"Local-input translator: {args.translator}")
     errors = _run_expected_probes(output_dir)
 
     if args.include_local_inputs:

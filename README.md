@@ -326,11 +326,12 @@ Current OCR boundary:
 Validate the guarded OCR prototype on known probes with:
 
 ```bash
-./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend mock
 ./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend tesseract --include-local-inputs
 ```
 
-The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, render decisions, and generated PDF/TXT/PNG paths.
+The probe matrix uses the configured translator and Tesseract by default. Use `--translator mock` or `--backend mock` only for quick debugging when the local model or OCR engine is unavailable. The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, recomposition render modes, render decisions, and generated PDF/TXT/PNG paths.
+
+The current OCR in-place prototype is about recomposition fidelity, not final translation quality. Translation text is still an input to stress layout fitting and readiness gates; the project is expected to be connected to a stronger translation model later.
 
 ## Test Inputs
 
