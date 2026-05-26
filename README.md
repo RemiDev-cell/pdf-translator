@@ -274,6 +274,7 @@ It currently supports:
 - recommending whether OCR output should remain a side annotation or become a future image-overlay candidate
 - classifying OCR readiness as `ready_for_image_overlay`, `side_annotation_review`, `manual_review`, or `blocked`
 - rendering a diagnostic PDF that applies native replacements and annotates pending OCR regions
+- rendering an explicit guarded OCR in-place prototype for OCR regions classified as ready
 - explaining mixed native/OCR translation methods and render decisions in debug summaries
 
 The one-command workflow is:
@@ -283,6 +284,18 @@ The one-command workflow is:
 ```
 
 The preferred review entrypoint is now `document-preview`, which first writes a routing report and then dispatches to either the native overlay preview or the native/OCR fusion preview.
+
+An explicit OCR in-place prototype can be rendered from an existing replacement plan:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-inplace-preview data/input/supportpourocr01.pdf --plan-json data/debug/supportpourocr01_document_preview_fusion_replacement_plan.json
+```
+
+Or it can generate the OCR fusion plan first:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-inplace-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract
+```
 
 Useful outputs include:
 
@@ -296,6 +309,9 @@ Useful outputs include:
 - `data/debug/*_ocr_page_translation_preview.json`
 - `data/debug/*_ocr_page_translation_preview.txt`
 - `data/debug/*_fusion_overlay_diagnostics.pdf`
+- `data/debug/*_ocr_inplace_prototype.pdf`
+- `data/debug/*_ocr_inplace_prototype.txt`
+- `data/debug/*_ocr_inplace_prototype_page_*.png`
 
 Current OCR boundary:
 
@@ -303,9 +319,18 @@ Current OCR boundary:
 - native text replacements can still be previewed through the overlay path
 - fusion/OCR summaries now expose translation method, attempt count, and per-replacement render decisions
 - OCR diagnostic rendering is driven by the final OCR recommendation: image overlay, side annotation, or manual review
-- OCR readiness is diagnostic-only for now; it explains whether each OCR region is ready for image overlay, needs side/manual review, or is blocked by translation, geometry, empty text, or clipping risk
-- OCR regions are not yet rewritten inside the scanned image itself
+- OCR readiness is still not active in `document-preview`; the separate `ocr-inplace-preview` command uses it as the guard for prototype in-place rendering
+- OCR regions are not yet rewritten inside the scanned image by the default preview path
 - long OCR translations are currently recommended as side annotations when they do not fit safely into the source image region
+
+Validate the guarded OCR prototype on known probes with:
+
+```bash
+./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend mock
+./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend tesseract --include-local-inputs
+```
+
+The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, render decisions, and generated PDF/TXT/PNG paths.
 
 ## Test Inputs
 
@@ -316,6 +341,8 @@ Synthetic and real test PDFs currently used:
 - `scientifique-mixte.pdf`
 - `layout-tricky.pdf`
 - `supportpourocr01.pdf`
+
+Additional local OCR probes may be present but are intentionally ignored by Git, for example `essai_ocr_02.pdf`.
 
 Synthetic PDFs can be regenerated with:
 
