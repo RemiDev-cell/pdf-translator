@@ -39,14 +39,17 @@ from pdf_translator.ocr.debug import (
     native_ocr_fusion_plan_to_text,
     native_ocr_fusion_report_to_text,
     ocr_overlay_strategy_report_to_text,
+    ocr_inplace_prototype_summary_to_text,
     ocr_page_translation_preview_report_to_text,
     ocr_review_report_to_text,
     render_fusion_overlay_diagnostics,
+    render_ocr_inplace_prototype,
     write_fusion_replacement_plan,
     write_fusion_overlay_diagnostics_summary,
     write_fusion_translation_preview_report,
     write_native_ocr_fusion_plan,
     write_native_ocr_fusion_report,
+    write_ocr_inplace_prototype_summary,
     write_ocr_candidate_report,
     write_ocr_overlay_strategy_report,
     write_ocr_review_report,
@@ -616,6 +619,46 @@ def ocr_overlay_strategy(
     print(ocr_overlay_strategy_report_to_text(report))
     print(f"[green]OCR overlay strategy JSON ecrit dans :[/green] {json_path}")
     print(f"[green]OCR overlay strategy texte ecrit dans :[/green] {text_path}")
+
+
+@app.command()
+def ocr_inplace_preview(
+    pdf_path: Path,
+    pages: str = "1",
+    backend: Optional[str] = None,
+    plan_json: Optional[Path] = None,
+) -> None:
+    """Rend un prototype OCR in-place garde par la readiness OCR."""
+    configure_logging()
+    if plan_json is None:
+        selected_pages = _parse_pages_or_all(pages)
+        document = extract_document(pdf_path)
+        result = run_ocr_experiment(
+            pdf_path=pdf_path,
+            document_ir=document.model_dump(),
+            output_dir=settings.debug_dir,
+            translate_text_fn=translate_text,
+            selected_pages=selected_pages,
+            backend=backend,
+        )
+        replacement_plan_data = result["fusion_replacement_plan"]
+    else:
+        replacement_plan_data = json.loads(plan_json.read_text(encoding="utf-8"))
+
+    stem = f"{pdf_path.stem}_ocr_inplace_prototype"
+    pdf_output_path, summary, image_paths = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=replacement_plan_data,
+        output_dir=settings.debug_dir,
+        stem=stem,
+    )
+    summary_path = write_ocr_inplace_prototype_summary(summary, settings.debug_dir, stem)
+    print(ocr_inplace_prototype_summary_to_text(summary))
+    print(f"[green]OCR in-place prototype PDF ecrit dans :[/green] {pdf_output_path}")
+    print(f"[green]OCR in-place prototype resume ecrit dans :[/green] {summary_path}")
+    if image_paths:
+        print(f"[green]Premiere image ecrite dans :[/green] {image_paths[0]}")
+        print(f"[green]Nombre d'images generees :[/green] {len(image_paths)}")
 
 
 @app.command()

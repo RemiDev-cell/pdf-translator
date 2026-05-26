@@ -19,9 +19,11 @@ from pdf_translator.ocr.debug import (
     native_ocr_fusion_plan_to_text,
     native_ocr_fusion_report_to_text,
     ocr_overlay_strategy_report_to_text,
+    ocr_inplace_prototype_summary_to_text,
     ocr_page_translation_preview_report_to_text,
     ocr_review_report_to_text,
     render_fusion_overlay_diagnostics,
+    render_ocr_inplace_prototype,
     run_ocr_debug_pipeline,
     write_fusion_replacement_plan,
     write_fusion_overlay_diagnostics_summary,
@@ -29,12 +31,32 @@ from pdf_translator.ocr.debug import (
     write_native_ocr_fusion_plan,
     write_native_ocr_fusion_report,
     write_ocr_candidate_report,
+    write_ocr_inplace_prototype_summary,
     write_ocr_overlay_strategy_report,
     write_ocr_page_translation_preview_report,
     write_ocr_review_report,
 )
 from pdf_translator.qa.checks import annotate_repeated_blocks
 from pdf_translator.routing import build_ocr_candidate_report
+
+
+def _rendered_rgb_at(pdf_path: Path, page_index: int, x: int, y: int) -> tuple[int, int, int]:
+    doc = fitz.open(pdf_path)
+    try:
+        pixmap = doc[page_index].get_pixmap(alpha=False)
+        offset = (y * pixmap.width + x) * pixmap.n
+        return tuple(pixmap.samples[offset : offset + 3])
+    finally:
+        doc.close()
+
+
+def _write_black_ocr_region_pdf(pdf_path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=420, height=240)
+    page.insert_text((24, 42), "Native text")
+    page.draw_rect(fitz.Rect(60, 100, 180, 160), color=(0, 0, 0), fill=(0, 0, 0), width=0)
+    doc.save(pdf_path)
+    doc.close()
 
 
 def test_run_ocr_debug_pipeline_writes_manifest_pngs_and_mock_ocr(tmp_path: Path) -> None:
@@ -1229,6 +1251,194 @@ def test_render_fusion_overlay_diagnostics_adds_review_appendix_for_manual_ocr(t
         assert "crop_constrained_edges=right" in rendered[1].get_text()
     finally:
         rendered.close()
+
+
+def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-ready-source.pdf"
+    _write_black_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "source_text": "Etiquette",
+                        "translated_text": "Label",
+                    },
+                ],
+            }
+        ],
+    }
+
+    pdf_output_path, summary, image_paths = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_ready",
+    )
+    text = ocr_inplace_prototype_summary_to_text(summary)
+    summary_path = write_ocr_inplace_prototype_summary(summary, tmp_path, "ocr_inplace_ready")
+
+    assert pdf_output_path.exists()
+    assert summary_path.exists()
+    assert len(image_paths) == 1
+    assert summary["total_ocr_inplace_applied"] == 1
+    assert summary["total_ocr_annotated"] == 0
+    assert summary["render_decision_summary"] == {"applied_ocr_inplace": 1}
+    assert summary["ocr_readiness_summary"] == {"ready_for_image_overlay": 1}
+    assert "decision=applied_ocr_inplace" in text
+    assert "Total OCR in-place applied: 1" in text
+    assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) > 600
+
+
+def test_render_ocr_inplace_prototype_keeps_side_annotation_off_region(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-side-source.pdf"
+    _write_black_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "high",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": ["long_translation"]},
+                        "bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "source_text": "Texte OCR",
+                        "translated_text": "This OCR translation is intentionally long enough to stay as a side annotation for human review.",
+                        "ocr_recommendation": "image_overlay_candidate",
+                        "ocr_recommendation_reasons": ["precomputed_image_candidate"],
+                        "ocr_readiness_status": "side_annotation_review",
+                        "ocr_readiness_reasons": ["manual_readiness_override"],
+                    },
+                ],
+            }
+        ],
+    }
+
+    pdf_output_path, summary, _ = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_side",
+    )
+
+    assert summary["total_ocr_inplace_applied"] == 0
+    assert summary["total_ocr_annotated"] == 1
+    assert summary["render_decision_summary"] == {"annotated_ocr_side": 1}
+    assert summary["ocr_recommendation_summary"] == {"image_overlay_candidate": 1}
+    assert summary["ocr_readiness_summary"] == {"side_annotation_review": 1}
+    assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) < 30
+
+
+def test_render_ocr_inplace_prototype_keeps_blocked_ocr_in_review_appendix(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-blocked-source.pdf"
+    _write_black_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_review_required",
+                        "status": "translated",
+                        "fit_risk": "medium",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": ["edge_clipping_detected"]},
+                        "edge_clipping_detected": True,
+                        "edge_clipping_line_count": 1,
+                        "bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "source_text": "Texte OCR coupe",
+                        "translated_text": "Clipped OCR text",
+                    },
+                ],
+            }
+        ],
+    }
+
+    pdf_output_path, summary, image_paths = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_blocked",
+    )
+    text = ocr_inplace_prototype_summary_to_text(summary)
+
+    assert len(image_paths) == 2
+    assert summary["total_ocr_inplace_applied"] == 0
+    assert summary["total_ocr_review_required"] == 1
+    assert summary["render_decision_summary"] == {"annotated_ocr_review": 1}
+    assert summary["ocr_readiness_summary"] == {"blocked": 1}
+    assert summary["ocr_review_appendix_page_count"] == 1
+    assert "decision=annotated_ocr_review" in text
+    assert "readiness=blocked" in text
+    rendered = fitz.open(pdf_output_path)
+    try:
+        assert rendered.page_count == 2
+        assert "OCR manual review" in rendered[1].get_text()
+    finally:
+        rendered.close()
+
+
+def test_render_ocr_inplace_prototype_skips_missing_ocr_bbox(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-missing-bbox-source.pdf"
+    _write_black_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {},
+                        "source_text": "Texte OCR",
+                        "translated_text": "OCR text",
+                    },
+                ],
+            }
+        ],
+    }
+
+    _, summary, image_paths = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_missing_bbox",
+    )
+
+    assert len(image_paths) == 1
+    assert summary["total_skipped"] == 1
+    assert summary["total_ocr_inplace_applied"] == 0
+    assert summary["render_decision_summary"] == {"skipped_missing_bbox": 1}
+    assert summary["ocr_readiness_summary"] == {"blocked": 1}
 
 
 def test_render_fusion_overlay_diagnostics_explains_skips_and_side_annotations(tmp_path: Path) -> None:

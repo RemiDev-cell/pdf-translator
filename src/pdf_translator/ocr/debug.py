@@ -2067,6 +2067,33 @@ def _render_ocr_layout_overlay(
     return rendered_count > 0
 
 
+def _apply_ocr_inplace_overlay(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    replacement: dict[str, Any],
+) -> None:
+    translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
+
+    rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
+
+    if not rendered_with_layout:
+        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+        text_box = rect + (4, 4, -4, -4)
+        approx_line_count = max(
+            1,
+            translated_text.count("\n") + len(translated_text) // 65,
+        )
+        font_size = min(8.0, max(4.5, text_box.height / (approx_line_count * 1.45)))
+        page.insert_textbox(
+            text_box,
+            translated_text,
+            fontsize=font_size,
+            fontname="helv",
+            color=(0, 0, 0),
+        )
+    page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+
+
 def _fusion_render_review_item(
     replacement: dict[str, Any],
     render_decision: str,
@@ -2216,27 +2243,7 @@ def render_fusion_overlay_diagnostics(
 
                 if recommendation == "image_overlay_candidate":
                     record_render_decision(replacement, "applied_ocr_overlay")
-                    translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
-
-                    rendered_with_layout = _render_ocr_layout_overlay(page, rect, replacement)
-
-                    if not rendered_with_layout:
-                        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-                        # Conservative OCR block fitting: avoid silent truncation in dense translated OCR regions.
-                        text_box = rect + (4, 4, -4, -4)
-                        approx_line_count = max(
-                            1,
-                            translated_text.count("\n") + len(translated_text) // 65,
-                        )
-                        font_size = min(8.0, max(4.5, text_box.height / (approx_line_count * 1.45)))
-                        page.insert_textbox(
-                            text_box,
-                            translated_text,
-                            fontsize=font_size,
-                            fontname="helv",
-                            color=(0, 0, 0),
-                        )
-                    page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+                    _apply_ocr_inplace_overlay(page, rect, replacement)
                     ocr_annotated += 1
                     total_ocr_annotated += 1
                     total_ocr_overlay_applied += 1
@@ -2393,6 +2400,302 @@ def write_fusion_overlay_diagnostics_summary(
     output_dir.mkdir(parents=True, exist_ok=True)
     text_path = output_dir / f"{stem}.txt"
     text_path.write_text(fusion_overlay_diagnostics_summary_to_text(summary), encoding="utf-8")
+    return text_path
+
+
+def render_ocr_inplace_prototype(
+    pdf_path: Path,
+    fusion_replacement_plan: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+    allowed_native_fit_risks: tuple[str, ...] = ("low", "medium"),
+) -> tuple[Path, dict[str, Any], list[Path]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_doc = fitz.open(pdf_path)
+    prototype_doc = fitz.open()
+    image_paths: list[Path] = []
+
+    summary_pages: list[dict[str, Any]] = []
+    total_considered = 0
+    total_native_applied = 0
+    total_ocr_inplace_applied = 0
+    total_ocr_annotated = 0
+    total_ocr_side_annotated = 0
+    total_ocr_review_required = 0
+    total_skipped = 0
+    ocr_recommendation_summary: dict[str, int] = {}
+    ocr_readiness_summary: Counter[str] = Counter()
+    ocr_readiness_reason_summary: Counter[str] = Counter()
+    render_decision_summary: Counter[str] = Counter()
+    ocr_review_appendix_entries: list[dict[str, Any]] = []
+
+    for page_report in fusion_replacement_plan.get("pages", []):
+        page_number = int(page_report["page_number"])
+        prototype_doc.insert_pdf(source_doc, from_page=page_number - 1, to_page=page_number - 1)
+        page = prototype_doc[-1]
+
+        native_applied = 0
+        ocr_inplace_applied = 0
+        ocr_annotated = 0
+        skipped = 0
+        page_ocr_recommendations: dict[str, int] = {}
+        page_ocr_readiness_summary: Counter[str] = Counter()
+        page_ocr_readiness_reason_summary: Counter[str] = Counter()
+        page_render_decision_summary: Counter[str] = Counter()
+        render_review_items: list[dict[str, Any]] = []
+
+        def record_render_decision(replacement: dict[str, Any], render_decision: str) -> None:
+            page_render_decision_summary[render_decision] += 1
+            render_decision_summary[render_decision] += 1
+            render_review_items.append(_fusion_render_review_item(replacement, render_decision))
+
+        for replacement in page_report.get("replacements", []):
+            total_considered += 1
+            if replacement.get("source_kind") == "ocr":
+                provided_readiness_status = replacement.get("ocr_readiness_status")
+                provided_readiness_reasons = replacement.get("ocr_readiness_reasons")
+                _ensure_ocr_review_metadata(replacement)
+                if provided_readiness_status:
+                    replacement["ocr_readiness_status"] = provided_readiness_status
+                    if provided_readiness_reasons is not None:
+                        replacement["ocr_readiness_reasons"] = list(provided_readiness_reasons)
+                recommendation = replacement["ocr_recommendation"]
+                ocr_recommendation_summary[recommendation] = ocr_recommendation_summary.get(recommendation, 0) + 1
+                page_ocr_recommendations[recommendation] = page_ocr_recommendations.get(recommendation, 0) + 1
+                page_ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                ocr_readiness_summary[replacement["ocr_readiness_status"]] += 1
+                for reason in replacement["ocr_readiness_reasons"]:
+                    page_ocr_readiness_reason_summary[reason] += 1
+                    ocr_readiness_reason_summary[reason] += 1
+
+            rect = _rect_from_bbox(replacement.get("bbox", {}))
+            if rect is None or rect.is_empty:
+                record_render_decision(replacement, "skipped_missing_bbox")
+                skipped += 1
+                total_skipped += 1
+                continue
+
+            strategy = replacement.get("apply_strategy")
+            status = replacement.get("status")
+            fit_risk = replacement.get("fit_risk")
+
+            if status != "translated" and replacement.get("source_kind") != "ocr":
+                record_render_decision(replacement, "skipped_status")
+                skipped += 1
+                total_skipped += 1
+                continue
+
+            if (
+                strategy == "native_overlay_candidate"
+                and (
+                    fit_risk in allowed_native_fit_risks
+                    or replacement.get("role") == "table_header_cell"
+                )
+            ):
+                record_render_decision(replacement, "applied_native_overlay")
+                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                translated_text = replacement.get("translated_text", "")
+
+                approx_line_count = max(1, translated_text.count("\n") + len(translated_text) // 90)
+                font_size = min(10, max(6, rect.height / (approx_line_count * 1.2)))
+                text_box = rect + (2, 2, -2, -2)
+                font_size = _fit_ocr_textbox_font_size(
+                    page,
+                    text_box,
+                    translated_text,
+                    min_size=4.0,
+                    max_size=font_size,
+                )
+
+                overflow = page.insert_textbox(
+                    text_box,
+                    translated_text,
+                    fontsize=font_size,
+                    fontname="helv",
+                    color=(0, 0, 0),
+                )
+                if overflow < 0:
+                    page.insert_text(
+                        fitz.Point(text_box.x0, text_box.y1),
+                        translated_text,
+                        fontsize=font_size,
+                        fontname="helv",
+                        color=(0, 0, 0),
+                    )
+                native_applied += 1
+                total_native_applied += 1
+                continue
+
+            if strategy == "native_overlay_candidate":
+                record_render_decision(replacement, "skipped_native_fit_risk")
+                skipped += 1
+                total_skipped += 1
+                continue
+
+            if replacement.get("source_kind") == "ocr":
+                recommendation = replacement["ocr_recommendation"]
+                reasons = replacement["ocr_recommendation_reasons"]
+                readiness_status = replacement.get("ocr_readiness_status", "manual_review")
+
+                if readiness_status == "ready_for_image_overlay":
+                    record_render_decision(replacement, "applied_ocr_inplace")
+                    _apply_ocr_inplace_overlay(page, rect, replacement)
+                    ocr_inplace_applied += 1
+                    total_ocr_inplace_applied += 1
+                    continue
+
+                render_decision = (
+                    "annotated_ocr_side"
+                    if readiness_status == "side_annotation_review"
+                    else "annotated_ocr_review"
+                )
+                record_render_decision(replacement, render_decision)
+                page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
+                label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
+                page.insert_text(
+                    label_point,
+                    f"{replacement.get('segment_id')} OCR {readiness_status}",
+                    fontsize=8,
+                    fontname="helv",
+                    color=(1.0, 0.35, 0.0),
+                )
+                if render_decision == "annotated_ocr_review":
+                    ocr_review_appendix_entries.append(
+                        {
+                            "page_number": page_number,
+                            "replacement": replacement,
+                            "recommendation": recommendation,
+                            "reasons": reasons,
+                        }
+                    )
+                    total_ocr_review_required += 1
+                else:
+                    _draw_diagnostic_note(
+                        page,
+                        rect,
+                        _format_ocr_diagnostic_note(replacement, recommendation, reasons),
+                    )
+                    total_ocr_side_annotated += 1
+                ocr_annotated += 1
+                total_ocr_annotated += 1
+                continue
+
+            record_render_decision(replacement, "skipped_apply_strategy")
+            skipped += 1
+            total_skipped += 1
+
+        summary_pages.append(
+            {
+                "page_number": page_number,
+                "considered_replacements": len(page_report.get("replacements", [])),
+                "native_applied": native_applied,
+                "ocr_inplace_applied": ocr_inplace_applied,
+                "ocr_annotated": ocr_annotated,
+                "ocr_recommendations": page_ocr_recommendations,
+                "ocr_readiness_summary": dict(page_ocr_readiness_summary),
+                "ocr_readiness_reason_summary": dict(page_ocr_readiness_reason_summary),
+                "skipped": skipped,
+                "render_decision_summary": dict(page_render_decision_summary),
+                "render_review_items": render_review_items,
+            }
+        )
+
+    for entry in ocr_review_appendix_entries:
+        _draw_ocr_review_appendix_page(
+            prototype_doc,
+            int(entry["page_number"]),
+            entry["replacement"],
+            entry["recommendation"],
+            entry["reasons"],
+        )
+
+    pdf_output_path = output_dir / f"{stem}.pdf"
+    prototype_doc.save(pdf_output_path)
+
+    for index, page in enumerate(prototype_doc, start=1):
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+        image_path = output_dir / f"{stem}_page_{index:03d}.png"
+        pixmap.save(image_path)
+        image_paths.append(image_path)
+
+    prototype_doc.close()
+    source_doc.close()
+
+    summary = {
+        "selected_pages": fusion_replacement_plan.get("selected_pages"),
+        "page_count": len(summary_pages),
+        "total_considered_replacements": total_considered,
+        "total_native_applied": total_native_applied,
+        "total_ocr_inplace_applied": total_ocr_inplace_applied,
+        "total_ocr_annotated": total_ocr_annotated,
+        "total_ocr_side_annotated": total_ocr_side_annotated,
+        "total_ocr_review_required": total_ocr_review_required,
+        "ocr_recommendation_summary": ocr_recommendation_summary,
+        "ocr_readiness_summary": dict(ocr_readiness_summary),
+        "ocr_readiness_reason_summary": dict(ocr_readiness_reason_summary),
+        "render_decision_summary": dict(render_decision_summary),
+        "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
+        "total_skipped": total_skipped,
+        "allowed_native_fit_risks": list(allowed_native_fit_risks),
+        "pages": summary_pages,
+    }
+
+    return pdf_output_path, summary, image_paths
+
+
+def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
+    lines = [
+        f"Selected pages: {summary.get('selected_pages') if summary.get('selected_pages') is not None else 'all'}",
+        f"Page count: {summary['page_count']}",
+        f"Allowed native fit risks: {summary['allowed_native_fit_risks']}",
+        f"Total considered replacements: {summary['total_considered_replacements']}",
+        f"Total native applied: {summary['total_native_applied']}",
+        f"Total OCR in-place applied: {summary['total_ocr_inplace_applied']}",
+        f"Total OCR annotated: {summary['total_ocr_annotated']}",
+        f"OCR recommendations: {json.dumps(summary.get('ocr_recommendation_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness: {json.dumps(summary.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR readiness reasons: {json.dumps(summary.get('ocr_readiness_reason_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}",
+        f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
+        f"Total skipped: {summary['total_skipped']}",
+    ]
+
+    for page in summary.get("pages", []):
+        lines.append(
+            f"Page {page['page_number']}: native_applied={page['native_applied']} "
+            f"ocr_inplace_applied={page['ocr_inplace_applied']} "
+            f"ocr_annotated={page['ocr_annotated']} skipped={page['skipped']} "
+            f"considered={page['considered_replacements']} "
+            f"ocr_recommendations={json.dumps(page.get('ocr_recommendations', {}), ensure_ascii=False, sort_keys=True)} "
+            f"ocr_readiness={json.dumps(page.get('ocr_readiness_summary', {}), ensure_ascii=False, sort_keys=True)} "
+            f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}"
+        )
+        for review_item in page.get("render_review_items", [])[:5]:
+            lines.append(
+                f"  render {review_item.get('segment_id')}: "
+                f"decision={review_item.get('render_decision')} "
+                f"kind={review_item.get('source_kind')} "
+                f"status={review_item.get('status')} "
+                f"risk={review_item.get('fit_risk')} "
+                f"strategy={review_item.get('apply_strategy')} "
+                f"recommendation={review_item.get('ocr_recommendation') or 'n/a'} "
+                f"readiness={review_item.get('ocr_readiness_status') or 'n/a'} "
+                f"method={review_item.get('translation_method', 'unknown')} "
+                f"attempts={review_item.get('translation_attempt_count', 0)} "
+                f"text={review_item.get('text_preview', '')}"
+            )
+
+    return "\n".join(lines)
+
+
+def write_ocr_inplace_prototype_summary(
+    summary: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    text_path = output_dir / f"{stem}.txt"
+    text_path.write_text(ocr_inplace_prototype_summary_to_text(summary), encoding="utf-8")
     return text_path
 
 
