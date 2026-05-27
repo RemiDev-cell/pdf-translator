@@ -202,6 +202,61 @@ def _assert_recomposition_review(probe_name: str, summary: dict[str, Any]) -> li
     return errors
 
 
+def _should_render_final_like(summary: dict[str, Any]) -> bool:
+    decisions = summary.get("render_decision_summary", {})
+    return int(decisions.get("applied_ocr_inplace", 0) or 0) > 0
+
+
+def _assert_final_like_review(
+    probe_name: str,
+    baseline_summary: dict[str, Any],
+    final_like_summary: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    if not bool(final_like_summary.get("review_final_like", False)):
+        errors.append(f"{probe_name}: final-like summary is not marked review_final_like")
+    if bool(final_like_summary.get("ocr_inplace_review_markers", True)):
+        errors.append(f"{probe_name}: final-like summary still has OCR review markers enabled")
+
+    for key in [
+        "render_decision_summary",
+        "ocr_render_mode_summary",
+        "ocr_readiness_summary",
+    ]:
+        if final_like_summary.get(key, {}) != baseline_summary.get(key, {}):
+            errors.append(
+                f"{probe_name}: final-like {key} changed from "
+                f"{baseline_summary.get(key, {})} to {final_like_summary.get(key, {})}"
+            )
+
+    for page in final_like_summary.get("pages", []):
+        page_number = page.get("page_number")
+        if not page.get("render_decision_summary", {}).get("applied_ocr_inplace", 0):
+            continue
+
+        metrics = page.get("recomposition_metrics", {})
+        if metrics.get("recomposition_verdict") != "clean":
+            errors.append(
+                f"{probe_name}: final-like page {page_number} verdict="
+                f"{metrics.get('recomposition_verdict')}"
+            )
+        if float(metrics.get("changed_outside_allowed_zone_ratio", 0.0) or 0.0) != 0.0:
+            errors.append(
+                f"{probe_name}: final-like page {page_number} changed outside allowed zones "
+                f"ratio={metrics.get('changed_outside_allowed_zone_ratio')}"
+            )
+
+        for item in page.get("render_review_items", []):
+            if item.get("render_decision") != "applied_ocr_inplace":
+                continue
+            if item.get("ocr_inplace_review_marker_drawn") is not False:
+                errors.append(
+                    f"{probe_name}: final-like {item.get('segment_id')} still has review marker"
+                )
+
+    return errors
+
+
 def _render_probe(
     *,
     name: str,
@@ -215,6 +270,25 @@ def _render_probe(
         fusion_replacement_plan=plan,
         output_dir=output_dir,
         stem=stem,
+    )
+    summary_path = write_ocr_inplace_prototype_summary(summary, output_dir, stem)
+    return pdf_path, summary, image_paths, summary_path
+
+
+def _render_final_like_probe(
+    *,
+    name: str,
+    source_pdf: Path,
+    plan: dict[str, Any],
+    output_dir: Path,
+) -> tuple[Path, dict[str, Any], list[Path], Path]:
+    stem = f"{name}_ocr_inplace_final_like_prototype"
+    pdf_path, summary, image_paths = render_ocr_inplace_prototype(
+        pdf_path=source_pdf,
+        fusion_replacement_plan=plan,
+        output_dir=output_dir,
+        stem=stem,
+        draw_ocr_review_markers=False,
     )
     summary_path = write_ocr_inplace_prototype_summary(summary, output_dir, stem)
     return pdf_path, summary, image_paths, summary_path
@@ -237,6 +311,24 @@ def _format_probe_line(
         f"readiness={json.dumps(summary.get('ocr_readiness_summary', {}), sort_keys=True)} "
         f"render_modes={json.dumps(summary.get('ocr_render_mode_summary', {}), sort_keys=True)} "
         f"decisions={json.dumps(summary.get('render_decision_summary', {}), sort_keys=True)} "
+        f"pdf={pdf_path} summary={summary_path} first_image={first_image}"
+    )
+
+
+def _format_final_like_line(
+    *,
+    name: str,
+    summary: dict[str, Any],
+    pdf_path: Path,
+    summary_path: Path,
+    image_paths: list[Path],
+) -> str:
+    first_image = str(image_paths[0]) if image_paths else "none"
+    return (
+        f"[OK] {name} final_like=rendered "
+        f"markers={summary.get('ocr_inplace_review_markers', True)} "
+        f"decisions={json.dumps(summary.get('render_decision_summary', {}), sort_keys=True)} "
+        f"render_modes={json.dumps(summary.get('ocr_render_mode_summary', {}), sort_keys=True)} "
         f"pdf={pdf_path} summary={summary_path} first_image={first_image}"
     )
 
@@ -268,6 +360,25 @@ def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False
             probe.expected_appendix_pages,
         )
         probe_errors.extend(_assert_recomposition_review(probe.name, summary))
+        if _should_render_final_like(summary):
+            final_pdf_path, final_summary, final_image_paths, final_summary_path = _render_final_like_probe(
+                name=probe.name,
+                source_pdf=source_pdf,
+                plan=plan,
+                output_dir=output_dir,
+            )
+            probe_errors.extend(
+                _assert_final_like_review(
+                    probe.name,
+                    summary,
+                    final_summary,
+                )
+            )
+        else:
+            final_pdf_path = None
+            final_summary = None
+            final_image_paths = []
+            final_summary_path = None
         errors.extend(probe_errors)
         print(
             _format_probe_line(
@@ -280,8 +391,22 @@ def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False
                 image_paths=image_paths,
             )
         )
+        if final_summary is not None and final_pdf_path is not None and final_summary_path is not None:
+            print(
+                _format_final_like_line(
+                    name=probe.name,
+                    summary=final_summary,
+                    pdf_path=final_pdf_path,
+                    summary_path=final_summary_path,
+                    image_paths=final_image_paths,
+                )
+            )
+        else:
+            print(f"[SKIP] {probe.name} final_like=not_applicable reason=no_applied_ocr_inplace")
         if probe_errors:
             print(ocr_inplace_prototype_summary_to_text(summary))
+            if final_summary is not None:
+                print(ocr_inplace_prototype_summary_to_text(final_summary))
     return errors
 
 
@@ -341,6 +466,30 @@ def _run_local_essai_probe(
         output_dir=output_dir,
     )
     errors.extend(_assert_recomposition_review("essai_ocr_02", summary))
+    if _should_render_final_like(summary):
+        (
+            final_pdf_path,
+            final_summary,
+            final_image_paths,
+            final_summary_path,
+        ) = _render_final_like_probe(
+            name="essai_ocr_02",
+            source_pdf=pdf_path,
+            plan=result["fusion_replacement_plan"],
+            output_dir=output_dir,
+        )
+        errors.extend(
+            _assert_final_like_review(
+                "essai_ocr_02",
+                summary,
+                final_summary,
+            )
+        )
+    else:
+        final_pdf_path = None
+        final_summary = None
+        final_image_paths = []
+        final_summary_path = None
 
     print(
         _format_probe_line(
@@ -353,6 +502,18 @@ def _run_local_essai_probe(
             image_paths=image_paths,
         )
     )
+    if final_summary is not None and final_pdf_path is not None and final_summary_path is not None:
+        print(
+            _format_final_like_line(
+                name="essai_ocr_02",
+                summary=final_summary,
+                pdf_path=final_pdf_path,
+                summary_path=final_summary_path,
+                image_paths=final_image_paths,
+            )
+        )
+    else:
+        print("[SKIP] essai_ocr_02 final_like=not_applicable reason=no_applied_ocr_inplace")
     print("essai_ocr_02 page preview:")
     for page in summary.get("pages", []):
         print(

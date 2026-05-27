@@ -321,6 +321,10 @@ Useful outputs include:
 - `data/debug/*_ocr_inplace_prototype.pdf`
 - `data/debug/*_ocr_inplace_prototype.txt`
 - `data/debug/*_ocr_inplace_prototype_page_*.png`
+- `data/debug/*_ocr_inplace_final_like_prototype.pdf`
+- `data/debug/*_ocr_inplace_final_like_prototype.txt`
+- `data/debug/*_ocr_inplace_final_like_prototype_page_*.png`
+- `data/debug/*_ocr_inplace_final_like_recomposition_review.html`
 
 Current OCR boundary:
 
@@ -340,6 +344,8 @@ Validate the guarded OCR prototype on known probes with:
 ```
 
 The probe matrix uses the configured translator and Tesseract by default. Use `--translator mock` or `--backend mock` only for quick debugging when the local model or OCR engine is unavailable. `--require-real-sources` makes the validation fail if the expected OCR source PDFs are missing instead of falling back to synthetic debug PDFs. The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, recomposition render modes, render decisions, and generated PDF/TXT/PNG/HTML paths.
+
+When a probe actually applies OCR in-place, the matrix also renders a final-like review artifact with OCR review markers hidden. It validates that this final-like rendering keeps the same render decisions, remains `clean`, has no changed pixels outside allowed zones, and reports `ocr_inplace_review_markers=False`. Probes that only use side annotations or manual-review appendices report final-like rendering as not applicable.
 
 The OCR in-place prototype also writes `data/debug/*_ocr_inplace_recomposition_review.html` with source/prototype page images and recomposition metrics by explicit render zone: source replacement zones, annotation zones, appendix zones, changes outside allowed zones, and a page verdict (`clean`, `expected_annotation_changes`, or `unexpected_outside_changes`).
 

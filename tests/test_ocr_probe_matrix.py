@@ -4,8 +4,10 @@ import pytest
 
 from scripts.run_ocr_inplace_probe_matrix import (
     ExpectedProbe,
+    _assert_final_like_review,
     _assert_recomposition_review,
     _resolve_probe_source,
+    _should_render_final_like,
 )
 
 
@@ -81,3 +83,140 @@ def test_probe_matrix_requires_side_annotations_to_stay_out_of_source_replacemen
     errors = _assert_recomposition_review("probe", summary)
 
     assert any("should not replace OCR source" in error for error in errors)
+
+
+def test_probe_matrix_renders_final_like_only_for_applied_ocr_inplace() -> None:
+    assert _should_render_final_like(
+        {"render_decision_summary": {"applied_ocr_inplace": 1}}
+    ) is True
+    assert _should_render_final_like(
+        {"render_decision_summary": {"annotated_ocr_side": 1}}
+    ) is False
+    assert _should_render_final_like(
+        {"render_decision_summary": {"annotated_ocr_review": 1}}
+    ) is False
+
+
+def test_probe_matrix_accepts_clean_final_like_review() -> None:
+    baseline_summary = {
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+    }
+    final_like_summary = {
+        "review_final_like": True,
+        "ocr_inplace_review_markers": False,
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+        "pages": [
+            {
+                "page_number": 1,
+                "render_decision_summary": {"applied_ocr_inplace": 1},
+                "recomposition_metrics": {
+                    "recomposition_verdict": "clean",
+                    "changed_outside_allowed_zone_ratio": 0.0,
+                },
+                "render_review_items": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "render_decision": "applied_ocr_inplace",
+                        "ocr_inplace_review_marker_drawn": False,
+                    }
+                ],
+            }
+        ],
+    }
+
+    errors = _assert_final_like_review(
+        "probe",
+        baseline_summary,
+        final_like_summary,
+    )
+
+    assert errors == []
+
+
+def test_probe_matrix_rejects_final_like_review_markers() -> None:
+    baseline_summary = {
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+    }
+    final_like_summary = {
+        "review_final_like": True,
+        "ocr_inplace_review_markers": True,
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+        "pages": [
+            {
+                "page_number": 1,
+                "render_decision_summary": {"applied_ocr_inplace": 1},
+                "recomposition_metrics": {
+                    "recomposition_verdict": "clean",
+                    "changed_outside_allowed_zone_ratio": 0.0,
+                },
+                "render_review_items": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "render_decision": "applied_ocr_inplace",
+                        "ocr_inplace_review_marker_drawn": True,
+                    }
+                ],
+            }
+        ],
+    }
+
+    errors = _assert_final_like_review(
+        "probe",
+        baseline_summary,
+        final_like_summary,
+    )
+
+    assert any("markers enabled" in error for error in errors)
+    assert any("still has review marker" in error for error in errors)
+
+
+def test_probe_matrix_rejects_dirty_final_like_recomposition() -> None:
+    baseline_summary = {
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+    }
+    final_like_summary = {
+        "review_final_like": True,
+        "ocr_inplace_review_markers": False,
+        "render_decision_summary": {"applied_ocr_inplace": 1},
+        "ocr_render_mode_summary": {"layout_tsv": 1},
+        "ocr_readiness_summary": {"ready_for_image_overlay": 1},
+        "pages": [
+            {
+                "page_number": 1,
+                "render_decision_summary": {"applied_ocr_inplace": 1},
+                "recomposition_metrics": {
+                    "recomposition_verdict": "unexpected_outside_changes",
+                    "changed_outside_allowed_zone_ratio": 0.2,
+                },
+                "render_review_items": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "render_decision": "applied_ocr_inplace",
+                        "ocr_inplace_review_marker_drawn": False,
+                    }
+                ],
+            }
+        ],
+    }
+
+    errors = _assert_final_like_review(
+        "probe",
+        baseline_summary,
+        final_like_summary,
+    )
+
+    assert any("verdict=unexpected_outside_changes" in error for error in errors)
+    assert any("changed outside allowed zones" in error for error in errors)
