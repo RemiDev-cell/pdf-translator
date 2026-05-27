@@ -91,3 +91,5 @@ def test_ocr_inplace_preview_command_accepts_plan_json(tmp_path: Path, monkeypat
     assert "Total OCR in-place applied: 1" in result.output
     assert (tmp_path / "source_ocr_inplace_prototype.pdf").exists()
     assert (tmp_path / "source_ocr_inplace_prototype.txt").exists()
+    assert (tmp_path / "source_ocr_inplace_recomposition_review.html").exists()
+    assert "OCR recomposition review" in result.output

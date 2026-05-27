@@ -326,10 +326,13 @@ Current OCR boundary:
 Validate the guarded OCR prototype on known probes with:
 
 ```bash
-./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend tesseract --include-local-inputs
+./.venv/bin/python scripts/generate_test_pdfs.py
+./.venv/bin/python scripts/run_ocr_inplace_probe_matrix.py --backend tesseract --include-local-inputs --require-real-sources
 ```
 
-The probe matrix uses the configured translator and Tesseract by default. Use `--translator mock` or `--backend mock` only for quick debugging when the local model or OCR engine is unavailable. The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, recomposition render modes, render decisions, and generated PDF/TXT/PNG paths.
+The probe matrix uses the configured translator and Tesseract by default. Use `--translator mock` or `--backend mock` only for quick debugging when the local model or OCR engine is unavailable. `--require-real-sources` makes the validation fail if the expected OCR source PDFs are missing instead of falling back to synthetic debug PDFs. The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, recomposition render modes, render decisions, and generated PDF/TXT/PNG/HTML paths.
+
+The OCR in-place prototype also writes `data/debug/*_ocr_inplace_recomposition_review.html` with source/prototype page images and simple recomposition metrics, including global changed pixels and changes outside replacement bboxes.
 
 The current OCR in-place prototype is about recomposition fidelity, not final translation quality. Translation text is still an input to stress layout fitting and readiness gates; the project is expected to be connected to a stronger translation model later.
 

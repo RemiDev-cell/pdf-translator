@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -2738,6 +2739,20 @@ def render_ocr_inplace_prototype(
         "pages": summary_pages,
     }
 
+    review_path, source_image_paths, recomposition_metrics = write_ocr_inplace_recomposition_review(
+        pdf_path=pdf_path,
+        prototype_pdf_path=pdf_output_path,
+        summary=summary,
+        output_dir=output_dir,
+        stem=stem,
+        prototype_image_paths=image_paths,
+    )
+    summary["recomposition_review_path"] = str(review_path)
+    summary["source_image_paths"] = [str(path) for path in source_image_paths]
+    summary["recomposition_metrics"] = recomposition_metrics
+    for page_summary, metrics in zip(summary_pages, recomposition_metrics):
+        page_summary["recomposition_metrics"] = metrics
+
     return pdf_output_path, summary, image_paths
 
 
@@ -2756,6 +2771,7 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         f"Render decisions: {json.dumps(summary.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR render modes: {json.dumps(summary.get('ocr_render_mode_summary', {}), ensure_ascii=False, sort_keys=True)}",
         f"OCR review appendix pages: {summary.get('ocr_review_appendix_page_count', 0)}",
+        f"Recomposition review: {summary.get('recomposition_review_path', 'n/a')}",
         f"Total skipped: {summary['total_skipped']}",
     ]
 
@@ -2770,6 +2786,15 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
             f"decisions={json.dumps(page.get('render_decision_summary', {}), ensure_ascii=False, sort_keys=True)} "
             f"ocr_render_modes={json.dumps(page.get('ocr_render_mode_summary', {}), ensure_ascii=False, sort_keys=True)}"
         )
+        metrics = page.get("recomposition_metrics") or {}
+        if metrics:
+            lines.append(
+                f"  recomposition changed_ratio={metrics.get('changed_pixel_ratio', 0.0)} "
+                f"inside_ratio={metrics.get('changed_in_replacement_zone_ratio', 0.0)} "
+                f"outside_ratio={metrics.get('changed_outside_replacement_zone_ratio', 0.0)} "
+                f"changed_pixels={metrics.get('changed_pixel_count', 0)} "
+                f"outside_changed_pixels={metrics.get('changed_outside_replacement_zone_count', 0)}"
+            )
         for review_item in page.get("render_review_items", [])[:5]:
             render_line = (
                 f"  render {review_item.get('segment_id')}: "
@@ -2810,6 +2835,276 @@ def write_ocr_inplace_prototype_summary(
     text_path = output_dir / f"{stem}.txt"
     text_path.write_text(ocr_inplace_prototype_summary_to_text(summary), encoding="utf-8")
     return text_path
+
+
+def _ocr_inplace_recomposition_review_stem(stem: str) -> str:
+    suffix = "_ocr_inplace_prototype"
+    if stem.endswith(suffix):
+        return f"{stem[:-len(suffix)]}_ocr_inplace_recomposition_review"
+    return f"{stem}_ocr_inplace_recomposition_review"
+
+
+def _bbox_to_pixel_rect(
+    bbox: dict[str, Any],
+    *,
+    zoom: float,
+    width: int,
+    height: int,
+    inflate_pt: float = 2.0,
+) -> tuple[int, int, int, int] | None:
+    try:
+        x0 = int(max(0, round((float(bbox.get("x0", 0.0)) - inflate_pt) * zoom)))
+        y0 = int(max(0, round((float(bbox.get("y0", 0.0)) - inflate_pt) * zoom)))
+        x1 = int(min(width, round((float(bbox.get("x1", 0.0)) + inflate_pt) * zoom)))
+        y1 = int(min(height, round((float(bbox.get("y1", 0.0)) + inflate_pt) * zoom)))
+    except (TypeError, ValueError):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def _point_in_pixel_rects(x: int, y: int, rects: list[tuple[int, int, int, int]]) -> bool:
+    return any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in rects)
+
+
+def _pixmap_recomposition_metrics(
+    source_pixmap: fitz.Pixmap,
+    prototype_pixmap: fitz.Pixmap,
+    replacement_rects: list[tuple[int, int, int, int]],
+    *,
+    diff_threshold: int = 12,
+) -> dict[str, Any]:
+    width = min(source_pixmap.width, prototype_pixmap.width)
+    height = min(source_pixmap.height, prototype_pixmap.height)
+    source_components = source_pixmap.n
+    prototype_components = prototype_pixmap.n
+    compared_components = min(3, source_components, prototype_components)
+
+    total_pixels = width * height
+    zone_pixels = 0
+    changed_pixels = 0
+    changed_zone_pixels = 0
+    changed_outside_pixels = 0
+    source_samples = source_pixmap.samples
+    prototype_samples = prototype_pixmap.samples
+
+    for y in range(height):
+        source_row_offset = y * source_pixmap.width * source_components
+        prototype_row_offset = y * prototype_pixmap.width * prototype_components
+        for x in range(width):
+            in_zone = _point_in_pixel_rects(x, y, replacement_rects)
+            if in_zone:
+                zone_pixels += 1
+
+            source_offset = source_row_offset + (x * source_components)
+            prototype_offset = prototype_row_offset + (x * prototype_components)
+            pixel_changed = False
+            for component in range(compared_components):
+                if abs(source_samples[source_offset + component] - prototype_samples[prototype_offset + component]) > diff_threshold:
+                    pixel_changed = True
+                    break
+            if pixel_changed:
+                changed_pixels += 1
+                if in_zone:
+                    changed_zone_pixels += 1
+                else:
+                    changed_outside_pixels += 1
+
+    outside_pixels = max(0, total_pixels - zone_pixels)
+
+    def ratio(count: int, denominator: int) -> float:
+        if denominator <= 0:
+            return 0.0
+        return round(count / denominator, 6)
+
+    return {
+        "comparison_width_px": width,
+        "comparison_height_px": height,
+        "dimension_mismatch": (
+            source_pixmap.width != prototype_pixmap.width
+            or source_pixmap.height != prototype_pixmap.height
+        ),
+        "total_pixel_count": total_pixels,
+        "replacement_zone_pixel_count": zone_pixels,
+        "outside_replacement_zone_pixel_count": outside_pixels,
+        "changed_pixel_count": changed_pixels,
+        "changed_in_replacement_zone_count": changed_zone_pixels,
+        "changed_outside_replacement_zone_count": changed_outside_pixels,
+        "changed_pixel_ratio": ratio(changed_pixels, total_pixels),
+        "changed_in_replacement_zone_ratio": ratio(changed_zone_pixels, zone_pixels),
+        "changed_outside_replacement_zone_ratio": ratio(changed_outside_pixels, outside_pixels),
+    }
+
+
+def _replacement_pixel_rects_for_page(
+    page_summary: dict[str, Any],
+    *,
+    width: int,
+    height: int,
+    zoom: float,
+) -> list[tuple[int, int, int, int]]:
+    rects: list[tuple[int, int, int, int]] = []
+    for item in page_summary.get("render_review_items", []):
+        rect = _bbox_to_pixel_rect(
+            item.get("bbox") or {},
+            zoom=zoom,
+            width=width,
+            height=height,
+        )
+        if rect is not None:
+            rects.append(rect)
+    return rects
+
+
+def _ocr_recomposition_review_html(
+    *,
+    summary: dict[str, Any],
+    html_path: Path,
+    source_image_paths: list[Path],
+    prototype_image_paths: list[Path],
+    metrics_by_page: list[dict[str, Any]],
+) -> str:
+    rows: list[str] = []
+    for index, page in enumerate(summary.get("pages", [])):
+        metrics = metrics_by_page[index] if index < len(metrics_by_page) else {}
+        source_image = source_image_paths[index].name if index < len(source_image_paths) else ""
+        prototype_image = prototype_image_paths[index].name if index < len(prototype_image_paths) else ""
+        review_items = page.get("render_review_items", [])
+        item_rows = []
+        for item in review_items:
+            item_rows.append(
+                "<tr>"
+                f"<td>{escape(str(item.get('segment_id', '')))}</td>"
+                f"<td>{escape(str(item.get('source_kind', '')))}</td>"
+                f"<td>{escape(str(item.get('render_decision', '')))}</td>"
+                f"<td>{escape(str(item.get('ocr_render_mode') or 'n/a'))}</td>"
+                f"<td>{escape(str(item.get('rendered_with_layout', False)))}</td>"
+                f"<td>{escape(str(item.get('ocr_layout_line_count', 0)))}</td>"
+                f"<td>{escape(str(item.get('ocr_layout_fallback_used', False)))}</td>"
+                "</tr>"
+            )
+
+        rows.append(
+            "<section>"
+            f"<h2>Page {escape(str(page.get('page_number')))}</h2>"
+            "<div class=\"metrics\">"
+            f"<span>changed={escape(str(metrics.get('changed_pixel_ratio', 0.0)))}</span>"
+            f"<span>inside={escape(str(metrics.get('changed_in_replacement_zone_ratio', 0.0)))}</span>"
+            f"<span>outside={escape(str(metrics.get('changed_outside_replacement_zone_ratio', 0.0)))}</span>"
+            f"<span>modes={escape(json.dumps(page.get('ocr_render_mode_summary', {}), sort_keys=True))}</span>"
+            "</div>"
+            "<div class=\"images\">"
+            f"<figure><figcaption>Source</figcaption><img src=\"{escape(source_image)}\" alt=\"Source page\"></figure>"
+            f"<figure><figcaption>OCR in-place prototype</figcaption><img src=\"{escape(prototype_image)}\" alt=\"Prototype page\"></figure>"
+            "</div>"
+            "<table>"
+            "<thead><tr><th>Segment</th><th>Kind</th><th>Decision</th><th>ocr_render_mode</th><th>Layout</th><th>TSV lines</th><th>Fallback</th></tr></thead>"
+            f"<tbody>{''.join(item_rows)}</tbody>"
+            "</table>"
+            "</section>"
+        )
+
+    return (
+        "<!doctype html>\n"
+        "<html><head><meta charset=\"utf-8\">"
+        f"<title>{escape(html_path.stem)}</title>"
+        "<style>"
+        "body{font-family:Arial,sans-serif;margin:24px;color:#1f2933;background:#f7f8fa}"
+        "h1{font-size:22px;margin:0 0 12px}"
+        "h2{font-size:18px;margin:28px 0 10px}"
+        ".summary,.metrics{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 16px}"
+        ".summary span,.metrics span{background:#fff;border:1px solid #d9dee7;padding:6px 8px;border-radius:4px}"
+        ".images{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}"
+        "figure{margin:0;background:#fff;border:1px solid #d9dee7;padding:8px}"
+        "figcaption{font-size:12px;font-weight:bold;margin-bottom:6px}"
+        "img{max-width:100%;height:auto;border:1px solid #e6e9ef}"
+        "table{border-collapse:collapse;width:100%;margin-top:14px;background:#fff}"
+        "th,td{border:1px solid #d9dee7;padding:6px 8px;font-size:12px;text-align:left}"
+        "th{background:#eef2f7}"
+        "</style></head><body>"
+        "<h1>OCR in-place recomposition review</h1>"
+        "<div class=\"summary\">"
+        f"<span>pages={escape(str(summary.get('page_count', 0)))}</span>"
+        f"<span>decisions={escape(json.dumps(summary.get('render_decision_summary', {}), sort_keys=True))}</span>"
+        f"<span>ocr_render_modes={escape(json.dumps(summary.get('ocr_render_mode_summary', {}), sort_keys=True))}</span>"
+        "</div>"
+        f"{''.join(rows)}"
+        "</body></html>\n"
+    )
+
+
+def write_ocr_inplace_recomposition_review(
+    *,
+    pdf_path: Path,
+    prototype_pdf_path: Path,
+    summary: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+    prototype_image_paths: list[Path],
+    zoom: float = 1.5,
+) -> tuple[Path, list[Path], list[dict[str, Any]]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    review_stem = _ocr_inplace_recomposition_review_stem(stem)
+    html_path = output_dir / f"{review_stem}.html"
+    source_image_paths: list[Path] = []
+    metrics_by_page: list[dict[str, Any]] = []
+
+    source_doc = fitz.open(pdf_path)
+    prototype_doc = fitz.open(prototype_pdf_path)
+    try:
+        for index, page_summary in enumerate(summary.get("pages", []), start=1):
+            source_page_number = int(page_summary["page_number"])
+            source_page = source_doc[source_page_number - 1]
+            prototype_page = prototype_doc[index - 1]
+
+            matrix = fitz.Matrix(zoom, zoom)
+            source_pixmap = source_page.get_pixmap(matrix=matrix, alpha=False)
+            prototype_pixmap = prototype_page.get_pixmap(matrix=matrix, alpha=False)
+
+            source_image_path = output_dir / f"{review_stem}_source_page_{index:03d}.png"
+            source_pixmap.save(source_image_path)
+            source_image_paths.append(source_image_path)
+
+            replacement_rects = _replacement_pixel_rects_for_page(
+                page_summary,
+                width=min(source_pixmap.width, prototype_pixmap.width),
+                height=min(source_pixmap.height, prototype_pixmap.height),
+                zoom=zoom,
+            )
+            metrics = _pixmap_recomposition_metrics(
+                source_pixmap,
+                prototype_pixmap,
+                replacement_rects,
+            )
+            metrics.update(
+                {
+                    "page_number": source_page_number,
+                    "source_image_path": str(source_image_path),
+                    "prototype_image_path": (
+                        str(prototype_image_paths[index - 1])
+                        if index - 1 < len(prototype_image_paths)
+                        else ""
+                    ),
+                    "ocr_render_mode_summary": page_summary.get("ocr_render_mode_summary", {}),
+                }
+            )
+            metrics_by_page.append(metrics)
+    finally:
+        prototype_doc.close()
+        source_doc.close()
+
+    html_path.write_text(
+        _ocr_recomposition_review_html(
+            summary=summary,
+            html_path=html_path,
+            source_image_paths=source_image_paths,
+            prototype_image_paths=prototype_image_paths,
+            metrics_by_page=metrics_by_page,
+        ),
+        encoding="utf-8",
+    )
+    return html_path, source_image_paths, metrics_by_page
 
 
 def _bbox_area(bbox: dict[str, Any]) -> float:

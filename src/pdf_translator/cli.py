@@ -656,6 +656,8 @@ def ocr_inplace_preview(
     print(ocr_inplace_prototype_summary_to_text(summary))
     print(f"[green]OCR in-place prototype PDF ecrit dans :[/green] {pdf_output_path}")
     print(f"[green]OCR in-place prototype resume ecrit dans :[/green] {summary_path}")
+    if summary.get("recomposition_review_path"):
+        print(f"[green]OCR recomposition review ecrite dans :[/green] {summary['recomposition_review_path']}")
     if image_paths:
         print(f"[green]Premiere image ecrite dans :[/green] {image_paths[0]}")
         print(f"[green]Nombre d'images generees :[/green] {len(image_paths)}")

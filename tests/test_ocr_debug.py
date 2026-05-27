@@ -1292,6 +1292,9 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert pdf_output_path.exists()
     assert summary_path.exists()
     assert len(image_paths) == 1
+    review_path = Path(summary["recomposition_review_path"])
+    assert review_path.exists()
+    assert Path(summary["source_image_paths"][0]).exists()
     assert summary["total_ocr_inplace_applied"] == 1
     assert summary["total_ocr_annotated"] == 0
     assert summary["render_decision_summary"] == {"applied_ocr_inplace": 1}
@@ -1304,8 +1307,18 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert ready_item["ocr_layout_line_count"] == 0
     assert ready_item["ocr_layout_rendered_block_count"] == 0
     assert ready_item["ocr_layout_fallback_used"] is True
+    metrics = summary["pages"][0]["recomposition_metrics"]
+    assert metrics["changed_in_replacement_zone_count"] > 0
+    assert metrics["changed_in_replacement_zone_ratio"] > 0.1
+    assert metrics["changed_outside_replacement_zone_ratio"] < 0.02
+    html = review_path.read_text(encoding="utf-8")
+    assert "ocr_render_mode" in html
+    assert "bbox_textbox" in html
+    assert image_paths[0].name in html
+    assert Path(summary["source_image_paths"][0]).name in html
     assert "decision=applied_ocr_inplace" in text
     assert 'OCR render modes: {"bbox_textbox": 1}' in text
+    assert "Recomposition review:" in text
     assert "ocr_render_mode=bbox_textbox" in text
     assert "Total OCR in-place applied: 1" in text
     assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) > 600

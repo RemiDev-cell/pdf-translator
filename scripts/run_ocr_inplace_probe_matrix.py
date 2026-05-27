@@ -124,9 +124,19 @@ def _build_synthetic_source_pdf(plan: dict[str, Any], output_dir: Path, stem: st
     return source_path
 
 
-def _resolve_probe_source(probe: ExpectedProbe, plan: dict[str, Any], output_dir: Path) -> tuple[Path, str]:
+def _resolve_probe_source(
+    probe: ExpectedProbe,
+    plan: dict[str, Any],
+    output_dir: Path,
+    *,
+    require_real_sources: bool = False,
+) -> tuple[Path, str]:
     if probe.source_pdf and probe.source_pdf.exists():
         return probe.source_pdf, "real"
+    if require_real_sources:
+        raise FileNotFoundError(
+            f"{probe.name}: --require-real-sources requested but missing {probe.source_pdf}"
+        )
     return _build_synthetic_source_pdf(plan, output_dir, probe.name), "synthetic"
 
 
@@ -192,11 +202,20 @@ def _format_probe_line(
     )
 
 
-def _run_expected_probes(output_dir: Path) -> list[str]:
+def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False) -> list[str]:
     errors: list[str] = []
     for probe in EXPECTED_PROBES:
-        plan = _load_plan(probe.plan_path)
-        source_pdf, source_mode = _resolve_probe_source(probe, plan, output_dir)
+        try:
+            plan = _load_plan(probe.plan_path)
+            source_pdf, source_mode = _resolve_probe_source(
+                probe,
+                plan,
+                output_dir,
+                require_real_sources=require_real_sources,
+            )
+        except FileNotFoundError as exc:
+            errors.append(str(exc))
+            continue
         pdf_path, summary, image_paths, summary_path = _render_probe(
             name=probe.name,
             source_pdf=source_pdf,
@@ -249,15 +268,21 @@ def _run_local_essai_probe(
     page_numbers = [int(page["page_number"]) for page in document_ir.get("pages", [])]
     artifact_stem = "essai_ocr_02_probe_matrix"
 
-    result = run_ocr_experiment(
-        pdf_path=pdf_path,
-        document_ir=document.model_dump(),
-        output_dir=output_dir,
-        translate_text_fn=_translator_for_mode(translator_mode),
-        selected_pages=page_numbers,
-        backend=backend,
-        artifact_stem=artifact_stem,
-    )
+    try:
+        result = run_ocr_experiment(
+            pdf_path=pdf_path,
+            document_ir=document.model_dump(),
+            output_dir=output_dir,
+            translate_text_fn=_translator_for_mode(translator_mode),
+            selected_pages=page_numbers,
+            backend=backend,
+            artifact_stem=artifact_stem,
+        )
+    except Exception as exc:
+        return [
+            "essai_ocr_02: local probe failed "
+            f"(backend={backend}, translator={translator_mode}): {type(exc).__name__}: {exc}"
+        ]
     status_summary = result.get("ocr_review", {}).get("status_summary", {})
     failing_statuses = {
         status: count
@@ -325,6 +350,11 @@ def parse_args() -> argparse.Namespace:
         help="Include local ignored PDFs such as data/input/essai_ocr_02.pdf.",
     )
     parser.add_argument(
+        "--require-real-sources",
+        action="store_true",
+        help="Fail instead of using synthetic debug PDFs when expected probe sources are missing.",
+    )
+    parser.add_argument(
         "--translator",
         choices=("mock", "configured"),
         default="configured",
@@ -346,7 +376,12 @@ def main() -> int:
 
     print(f"Probe output dir: {output_dir}")
     print(f"Local-input translator: {args.translator}")
-    errors = _run_expected_probes(output_dir)
+    if args.require_real_sources:
+        print("Expected probes require real source PDFs.")
+    errors = _run_expected_probes(
+        output_dir,
+        require_real_sources=args.require_real_sources,
+    )
 
     if args.include_local_inputs:
         errors.extend(

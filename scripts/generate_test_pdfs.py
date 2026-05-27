@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import textwrap
 
@@ -253,18 +254,111 @@ def build_layout_tricky(output_dir: Path) -> None:
     doc.close()
 
 
+def _text_image_pixmap(width: float, height: float, draw_fn) -> fitz.Pixmap:
+    image_doc = fitz.open()
+    page = image_doc.new_page(width=width, height=height)
+    draw_fn(page)
+    pixmap = page.get_pixmap(alpha=False)
+    image_doc.close()
+    return pixmap
+
+
+def build_mixed_native_ocr_image(output_dir: Path) -> None:
+    def draw_ocr_image(page: fitz.Page) -> None:
+        page.draw_rect(page.rect, color=(0.02, 0.02, 0.02), fill=(0.02, 0.02, 0.02), width=0)
+        page.insert_text((32, 52), "Ou puis-je m en procurer?", fontsize=19, fontname=FONT, color=(1, 1, 1))
+        page.insert_text((32, 94), "Plusieurs variations de Lorem Ipsum peuvent etre trouvees ici ou", fontsize=14, fontname=FONT, color=(1, 1, 1))
+        page.insert_text((32, 124), "Si vous voulez utiliser un passage du Lorem Ipsum, vous devez et", fontsize=14, fontname=FONT, color=(1, 1, 1))
+
+    ocr_pixmap = _text_image_pixmap(376, 259, draw_ocr_image)
+
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_textbox(
+        fitz.Rect(56.7, 56.5, 377.2, 70.8),
+        "Document mixte: texte natif + image scannee",
+        fontsize=10.5,
+        fontname=FONT,
+    )
+    page.insert_textbox(
+        fitz.Rect(56.7, 83.5, 538.5, 108.0),
+        (
+            "Ce haut de page est natif. La zone centrale est une image contenant du texte et des "
+            "controles de formulaire. Objectif: fusionner correctement les deux sources."
+        ),
+        fontsize=9.2,
+        fontname=FONT,
+    )
+    page.insert_image(
+        fitz.Rect(109.7, 149.0, 485.6, 407.9),
+        pixmap=ocr_pixmap,
+    )
+    page.insert_textbox(
+        fitz.Rect(56.7, 447.6, 538.5, 485.6),
+        (
+            "Ce bas de page est aussi natif. Il doit etre traduit entierement, sans utiliser un champ "
+            "preview tronque. Ce paragraphe verifie que le texte natif situe apres une image OCR reste "
+            "disponible et complet dans le plan de remplacement."
+        ),
+        fontsize=9.0,
+        fontname=FONT,
+    )
+
+    output_path = output_dir / "03_mixed_native_ocr_image.pdf"
+    doc.save(output_path)
+    doc.close()
+
+
+def build_scanned_pure_ocr(output_dir: Path) -> None:
+    def draw_scanned_page(page: fitz.Page) -> None:
+        page.draw_rect(page.rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+        page.insert_text((80, 110), "Document scanne - OCR processed", fontsize=34, fontname=FONT)
+        page.insert_text((80, 205), "This document contains no usable PDF text.", fontsize=24, fontname=FONT)
+        page.insert_text((80, 280), "The pipeline must detect absence of native text, launch OCR,", fontsize=22, fontname=FONT)
+        page.insert_text((80, 340), "recommend manual review when the crop is constrained,", fontsize=22, fontname=FONT)
+        page.insert_text((80, 400), "and keep a visible appendix for clipped regions.", fontsize=22, fontname=FONT)
+        page.insert_text((930, 650), "EDGE CLIPPED TEXT SAMPLE", fontsize=24, fontname=FONT)
+
+    scanned_pixmap = _text_image_pixmap(1100, 1500, draw_scanned_page)
+
+    doc = fitz.open()
+    page = doc.new_page(width=1100, height=1500)
+    page.insert_image(fitz.Rect(0, 0, 1100, 1500), pixmap=scanned_pixmap)
+
+    output_path = output_dir / "02_scanned_pure_ocr.pdf"
+    doc.save(output_path)
+    doc.close()
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate local PDF fixtures used by the debug pipeline.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate PDFs even when they already exist.",
+    )
+    args = parser.parse_args()
+
     project_root = Path(__file__).resolve().parents[1]
     output_dir = project_root / "data" / "input"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    build_simple_fr(output_dir)
-    build_scientifique_mixte(output_dir)
-    build_layout_tricky(output_dir)
+    builders = [
+        ("simple-fr.pdf", build_simple_fr),
+        ("scientifique-mixte.pdf", build_scientifique_mixte),
+        ("layout-tricky.pdf", build_layout_tricky),
+        ("02_scanned_pure_ocr.pdf", build_scanned_pure_ocr),
+        ("03_mixed_native_ocr_image.pdf", build_mixed_native_ocr_image),
+    ]
 
-    print("Generated PDFs:")
-    for name in ["simple-fr.pdf", "scientifique-mixte.pdf", "layout-tricky.pdf"]:
-        print(output_dir / name)
+    print("PDF fixtures:")
+    for name, builder in builders:
+        output_path = output_dir / name
+        if output_path.exists() and not args.force:
+            print(f"exists    {output_path}")
+            continue
+        builder(output_dir)
+        print(f"generated {output_path}")
 
 
 if __name__ == "__main__":
