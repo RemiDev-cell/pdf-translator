@@ -93,3 +93,21 @@ def test_ocr_inplace_preview_command_accepts_plan_json(tmp_path: Path, monkeypat
     assert (tmp_path / "source_ocr_inplace_prototype.txt").exists()
     assert (tmp_path / "source_ocr_inplace_recomposition_review.html").exists()
     assert "OCR recomposition review" in result.output
+
+    final_like_result = CliRunner().invoke(
+        cli.app,
+        [
+            "ocr-inplace-preview",
+            str(pdf_path),
+            "--plan-json",
+            str(plan_json),
+            "--review-final-like",
+        ],
+    )
+
+    assert final_like_result.exit_code == 0
+    assert "Review final-like: True" in final_like_result.output
+    assert "OCR in-place review markers: False" in final_like_result.output
+    assert (tmp_path / "source_ocr_inplace_final_like_prototype.pdf").exists()
+    assert (tmp_path / "source_ocr_inplace_final_like_prototype.txt").exists()
+    assert (tmp_path / "source_ocr_inplace_final_like_recomposition_review.html").exists()

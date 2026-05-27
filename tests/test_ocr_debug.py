@@ -50,11 +50,39 @@ def _rendered_rgb_at(pdf_path: Path, page_index: int, x: int, y: int) -> tuple[i
         doc.close()
 
 
+def _rgb_sums_in_rect(pdf_path: Path, page_index: int, rect: fitz.Rect) -> list[int]:
+    doc = fitz.open(pdf_path)
+    try:
+        pixmap = doc[page_index].get_pixmap(alpha=False)
+        x0 = max(0, int(rect.x0))
+        y0 = max(0, int(rect.y0))
+        x1 = min(pixmap.width, int(rect.x1))
+        y1 = min(pixmap.height, int(rect.y1))
+        sums = []
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                offset = (y * pixmap.width + x) * pixmap.n
+                sums.append(sum(pixmap.samples[offset : offset + 3]))
+        return sums
+    finally:
+        doc.close()
+
+
 def _write_black_ocr_region_pdf(pdf_path: Path) -> None:
     doc = fitz.open()
     page = doc.new_page(width=420, height=240)
     page.insert_text((24, 42), "Native text")
     page.draw_rect(fitz.Rect(60, 100, 180, 160), color=(0, 0, 0), fill=(0, 0, 0), width=0)
+    doc.save(pdf_path)
+    doc.close()
+
+
+def _write_light_ocr_region_pdf(pdf_path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=420, height=240)
+    page.insert_text((24, 42), "Native text")
+    light_fill = (0.93, 0.93, 0.88)
+    page.draw_rect(fitz.Rect(60, 100, 180, 160), color=light_fill, fill=light_fill, width=0)
     doc.save(pdf_path)
     doc.close()
 
@@ -1307,17 +1335,25 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert ready_item["ocr_layout_line_count"] == 0
     assert ready_item["ocr_layout_rendered_block_count"] == 0
     assert ready_item["ocr_layout_fallback_used"] is True
+    assert ready_item["ocr_background_full_clear"] is True
+    assert ready_item["ocr_background_luminance"] < 0.1
+    assert ready_item["ocr_inplace_review_marker_drawn"] is True
     assert {zone["zone_type"] for zone in ready_item["render_zones"]} == {"source_replacement_zone"}
     metrics = summary["pages"][0]["recomposition_metrics"]
     assert metrics["recomposition_verdict"] == "clean"
     assert metrics["changed_in_source_replacement_zone_count"] > 0
     assert metrics["changed_outside_allowed_zone_ratio"] == 0.0
     assert metrics["changed_in_replacement_zone_count"] > 0
-    assert metrics["changed_in_replacement_zone_ratio"] > 0.1
+    assert metrics["changed_in_replacement_zone_ratio"] > 0.02
     assert metrics["changed_outside_replacement_zone_ratio"] < 0.02
     html = review_path.read_text(encoding="utf-8")
     assert "ocr_render_mode" in html
     assert "bbox_textbox" in html
+    assert "Bg luminance" in html
+    assert "Bg dominant" in html
+    assert "Full clear" in html
+    assert "review_final_like=False" in html
+    assert "ocr_markers=True" in html
     assert "source_replacement_zone" in html
     assert "verdict=clean" in html
     assert image_paths[0].name in html
@@ -1326,8 +1362,56 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert 'OCR render modes: {"bbox_textbox": 1}' in text
     assert "Recomposition review:" in text
     assert "ocr_render_mode=bbox_textbox" in text
+    assert "background_luminance=" in text
+    assert "review_marker=True" in text
     assert "Total OCR in-place applied: 1" in text
-    assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) > 600
+    assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) < 90
+
+
+def test_render_ocr_inplace_prototype_preserves_light_ocr_background(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ocr-ready-light-source.pdf"
+    _write_light_ocr_region_pdf(pdf_path)
+
+    plan = {
+        "selected_pages": [1],
+        "pages": [
+            {
+                "page_number": 1,
+                "replacements": [
+                    {
+                        "segment_id": "P1O0",
+                        "source_kind": "ocr",
+                        "apply_strategy": "ocr_overlay_candidate",
+                        "status": "translated",
+                        "fit_risk": "low",
+                        "overflow_ratio": 1.0,
+                        "fit_diagnostics": {"flags": []},
+                        "bbox": {"x0": 60, "y0": 100, "x1": 180, "y1": 160},
+                        "source_text": "Etiquette claire",
+                        "translated_text": "Readable light OCR label",
+                    },
+                ],
+            }
+        ],
+    }
+
+    pdf_output_path, summary, _ = render_ocr_inplace_prototype(
+        pdf_path=pdf_path,
+        fusion_replacement_plan=plan,
+        output_dir=tmp_path,
+        stem="ocr_inplace_light",
+    )
+
+    item = summary["pages"][0]["render_review_items"][0]
+    assert item["ocr_render_mode"] == "bbox_textbox"
+    assert item["ocr_background_full_clear"] is True
+    assert item["ocr_background_luminance"] > 0.85
+    assert item["ocr_inplace_review_marker_drawn"] is True
+    assert summary["pages"][0]["recomposition_metrics"]["recomposition_verdict"] == "clean"
+
+    rgb_sums = _rgb_sums_in_rect(pdf_output_path, 0, fitz.Rect(64, 104, 176, 156))
+    assert min(rgb_sums) < 120
+    assert max(rgb_sums) > 650
 
 
 def test_render_ocr_inplace_prototype_reports_layout_tsv_mode(tmp_path: Path) -> None:
@@ -1376,7 +1460,7 @@ def test_render_ocr_inplace_prototype_reports_layout_tsv_mode(tmp_path: Path) ->
         ],
     }
 
-    _, summary, _ = render_ocr_inplace_prototype(
+    pdf_output_path, summary, _ = render_ocr_inplace_prototype(
         pdf_path=pdf_path,
         fusion_replacement_plan=plan,
         output_dir=tmp_path,
@@ -1393,6 +1477,10 @@ def test_render_ocr_inplace_prototype_reports_layout_tsv_mode(tmp_path: Path) ->
     assert item["ocr_layout_block_count"] == 1
     assert item["ocr_layout_rendered_line_count"] == 2
     assert item["ocr_layout_fallback_used"] is False
+    assert item["ocr_background_full_clear"] is True
+    assert item["ocr_background_luminance"] < 0.1
+    assert item["ocr_inplace_review_marker_drawn"] is True
+    assert sum(_rendered_rgb_at(pdf_output_path, 0, 175, 155)) < 90
     assert 'OCR render modes: {"layout_tsv": 1}' in text
     assert "ocr_render_mode=layout_tsv" in text
 

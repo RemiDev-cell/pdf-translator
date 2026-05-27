@@ -1884,6 +1884,100 @@ def _compute_block_bbox(block_lines, rect, crop_width_px, crop_height_px):
 
 
 
+def _rgb_luminance(color: tuple[float, float, float]) -> float:
+    return (0.2126 * color[0]) + (0.7152 * color[1]) + (0.0722 * color[2])
+
+
+def _contrasting_text_color(background_color: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (1, 1, 1) if _rgb_luminance(background_color) < 0.48 else (0, 0, 0)
+
+
+def _sample_page_rect_color_profile(page: fitz.Page, rect: fitz.Rect) -> dict[str, Any]:
+    """Estimate the dominant visible background color in a rendered page rect."""
+    clipped = rect & page.rect
+    if clipped.is_empty:
+        return {
+            "background_color": (1, 1, 1),
+            "text_color": (0, 0, 0),
+            "background_luminance": 1.0,
+            "background_dominant_ratio": 1.0,
+        }
+
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(1, 1), clip=clipped, alpha=False)
+    if pixmap.width <= 0 or pixmap.height <= 0 or pixmap.n <= 0:
+        return {
+            "background_color": (1, 1, 1),
+            "text_color": (0, 0, 0),
+            "background_luminance": 1.0,
+            "background_dominant_ratio": 1.0,
+        }
+
+    max_samples = 4096
+    step = max(1, int(((pixmap.width * pixmap.height) / max_samples) ** 0.5))
+    bins: Counter[tuple[int, int, int]] = Counter()
+    sums: dict[tuple[int, int, int], list[int]] = {}
+    sample_count = 0
+
+    for y in range(0, pixmap.height, step):
+        for x in range(0, pixmap.width, step):
+            offset = (y * pixmap.width + x) * pixmap.n
+            r = pixmap.samples[offset]
+            g = pixmap.samples[offset + 1] if pixmap.n > 1 else r
+            b = pixmap.samples[offset + 2] if pixmap.n > 2 else r
+            key = (r // 32, g // 32, b // 32)
+            bins[key] += 1
+            sums.setdefault(key, [0, 0, 0])
+            sums[key][0] += r
+            sums[key][1] += g
+            sums[key][2] += b
+            sample_count += 1
+
+    if not bins or sample_count <= 0:
+        return {
+            "background_color": (1, 1, 1),
+            "text_color": (0, 0, 0),
+            "background_luminance": 1.0,
+            "background_dominant_ratio": 1.0,
+        }
+
+    dominant_key, dominant_count = bins.most_common(1)[0]
+    dominant_sum = sums[dominant_key]
+    background_color = (
+        dominant_sum[0] / (dominant_count * 255.0),
+        dominant_sum[1] / (dominant_count * 255.0),
+        dominant_sum[2] / (dominant_count * 255.0),
+    )
+    text_color = _contrasting_text_color(background_color)
+
+    return {
+        "background_color": background_color,
+        "text_color": text_color,
+        "background_luminance": _rgb_luminance(background_color),
+        "background_dominant_ratio": dominant_count / sample_count,
+    }
+
+
+def _expanded_ocr_background_rect(rect: fitz.Rect, page: fitz.Page) -> fitz.Rect:
+    x_pad = max(1.0, min(4.0, rect.width * 0.015))
+    y_pad = max(2.0, min(6.0, rect.height * 0.45))
+    return (rect + (-x_pad, -y_pad, x_pad, y_pad)) & page.rect
+
+
+def _should_clear_ocr_rect_with_dominant_background(color_profile: dict[str, Any]) -> bool:
+    dominant_ratio = float(color_profile.get("background_dominant_ratio", 0.0) or 0.0)
+    luminance = float(color_profile.get("background_luminance", 1.0) or 1.0)
+    return dominant_ratio >= 0.72 or luminance <= 0.08 or luminance >= 0.92
+
+
+def _fill_ocr_background(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    color_profile: dict[str, Any],
+) -> None:
+    background_color = color_profile.get("background_color", (1, 1, 1))
+    page.draw_rect(rect, color=background_color, fill=background_color, width=0)
+
+
 def _fit_ocr_textbox_font_size(
     page: fitz.Page,
     rect: fitz.Rect,
@@ -1971,6 +2065,10 @@ def _render_ocr_layout_overlay(
         "ocr_layout_rendered_block_count": 0,
         "ocr_layout_rendered_line_count": 0,
     }
+    source_color_profile = _sample_page_rect_color_profile(page, rect)
+    clear_full_source = _should_clear_ocr_rect_with_dominant_background(source_color_profile)
+    if clear_full_source:
+        _fill_ocr_background(page, rect, source_color_profile)
 
     # Heuristic: if many lines → render by OCR blocks, preserving a short
     # first title line separately from the body paragraph.
@@ -1995,39 +2093,49 @@ def _render_ocr_layout_overlay(
 
             if title_rect and not title_rect.is_empty and title_text:
                 title_box = title_rect + (2, 0, -2, 2)
-                page.draw_rect(title_rect + (-1, -1, 1, 3), color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                title_color_profile = source_color_profile
+                if not clear_full_source:
+                    title_background_rect = _expanded_ocr_background_rect(title_rect, page)
+                    title_color_profile = _sample_page_rect_color_profile(page, title_background_rect)
+                    _fill_ocr_background(page, title_background_rect, title_color_profile)
                 title_size = _fit_ocr_textbox_font_size(
                     page,
                     title_box,
                     title_text,
                     min_size=5.5,
                     max_size=13.0,
+                    color=title_color_profile["text_color"],
                 )
                 page.insert_textbox(
                     title_box,
                     title_text,
                     fontsize=title_size,
                     fontname="helv",
-                    color=(0, 0, 0),
+                    color=title_color_profile["text_color"],
                 )
                 rendered_blocks += 1
 
             if body_rect and not body_rect.is_empty and body_text:
                 text_box = body_rect + (2, 2, -2, -2)
-                page.draw_rect(body_rect + (-1, -1, 1, 1), color=(1, 1, 1), fill=(1, 1, 1), width=0)
+                body_color_profile = source_color_profile
+                if not clear_full_source:
+                    body_background_rect = _expanded_ocr_background_rect(body_rect, page)
+                    body_color_profile = _sample_page_rect_color_profile(page, body_background_rect)
+                    _fill_ocr_background(page, body_background_rect, body_color_profile)
                 font_size = _fit_ocr_textbox_font_size(
                     page,
                     text_box,
                     body_text,
                     min_size=5.0,
                     max_size=13.0,
+                    color=body_color_profile["text_color"],
                 )
                 page.insert_textbox(
                     text_box,
                     body_text,
                     fontsize=font_size,
                     fontname="helv",
-                    color=(0, 0, 0),
+                    color=body_color_profile["text_color"],
                 )
                 rendered_blocks += 1
 
@@ -2035,6 +2143,9 @@ def _render_ocr_layout_overlay(
                 **layout_diagnostics,
                 "rendered_with_layout": rendered_blocks > 0,
                 "ocr_layout_rendered_block_count": rendered_blocks,
+                "ocr_background_luminance": round(source_color_profile["background_luminance"], 4),
+                "ocr_background_dominant_ratio": round(source_color_profile["background_dominant_ratio"], 4),
+                "ocr_background_full_clear": clear_full_source,
             }
 
         render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
@@ -2054,13 +2165,18 @@ def _render_ocr_layout_overlay(
                 continue
 
             text_box = block_rect + (2, 2, -2, -2)
-            page.draw_rect(block_rect + (-1, -1, 1, 1), color=(1, 1, 1), fill=(1, 1, 1), width=0)
+            block_color_profile = source_color_profile
+            if not clear_full_source:
+                block_background_rect = _expanded_ocr_background_rect(block_rect, page)
+                block_color_profile = _sample_page_rect_color_profile(page, block_background_rect)
+                _fill_ocr_background(page, block_background_rect, block_color_profile)
             font_size = _fit_ocr_textbox_font_size(
                 page,
                 text_box,
                 block_text,
                 min_size=5.0,
                 max_size=13.0,
+                color=block_color_profile["text_color"],
             )
 
             page.insert_textbox(
@@ -2068,7 +2184,7 @@ def _render_ocr_layout_overlay(
                 block_text,
                 fontsize=font_size,
                 fontname="helv",
-                color=(0, 0, 0),
+                color=block_color_profile["text_color"],
             )
             rendered_blocks += 1
 
@@ -2076,6 +2192,9 @@ def _render_ocr_layout_overlay(
             **layout_diagnostics,
             "rendered_with_layout": rendered_blocks > 0,
             "ocr_layout_rendered_block_count": rendered_blocks,
+            "ocr_background_luminance": round(source_color_profile["background_luminance"], 4),
+            "ocr_background_dominant_ratio": round(source_color_profile["background_dominant_ratio"], 4),
+            "ocr_background_full_clear": clear_full_source,
         }
 
     render_lines = _ocr_layout_render_lines(replacement, len(ocr_layout), ocr_layout)
@@ -2109,7 +2228,11 @@ def _render_ocr_layout_overlay(
         if not line_text:
             continue
 
-        page.draw_rect(line_rect + (-0.5, -0.5, 0.5, 0.5), color=(1, 1, 1), fill=(1, 1, 1), width=0)
+        line_color_profile = source_color_profile
+        if not clear_full_source:
+            line_background_rect = _expanded_ocr_background_rect(line_rect, page)
+            line_color_profile = _sample_page_rect_color_profile(page, line_background_rect)
+            _fill_ocr_background(page, line_background_rect, line_color_profile)
         font_size = max(5.0, min(12.5, line_rect.height * 0.95))
         text_width = fitz.get_text_length(line_text, fontname="helv", fontsize=font_size)
         if text_width > line_rect.width and text_width > 0:
@@ -2120,7 +2243,7 @@ def _render_ocr_layout_overlay(
             line_text,
             fontsize=font_size,
             fontname="helv",
-            color=(0, 0, 0),
+            color=line_color_profile["text_color"],
         )
         rendered_count += 1
 
@@ -2128,6 +2251,9 @@ def _render_ocr_layout_overlay(
         **layout_diagnostics,
         "rendered_with_layout": rendered_count > 0,
         "ocr_layout_rendered_line_count": rendered_count,
+        "ocr_background_luminance": round(source_color_profile["background_luminance"], 4),
+        "ocr_background_dominant_ratio": round(source_color_profile["background_dominant_ratio"], 4),
+        "ocr_background_full_clear": clear_full_source,
     }
 
 
@@ -2135,6 +2261,8 @@ def _apply_ocr_inplace_overlay(
     page: fitz.Page,
     rect: fitz.Rect,
     replacement: dict[str, Any],
+    *,
+    draw_review_marker: bool = True,
 ) -> dict[str, Any]:
     translated_text = _clean_ocr_overlay_text(replacement.get("translated_text", ""))
 
@@ -2142,7 +2270,8 @@ def _apply_ocr_inplace_overlay(
     rendered_with_layout = bool(layout_diagnostics.get("rendered_with_layout", False))
 
     if not rendered_with_layout:
-        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+        color_profile = _sample_page_rect_color_profile(page, rect)
+        _fill_ocr_background(page, rect, color_profile)
         text_box = rect + (4, 4, -4, -4)
         approx_line_count = max(
             1,
@@ -2154,13 +2283,22 @@ def _apply_ocr_inplace_overlay(
             translated_text,
             fontsize=font_size,
             fontname="helv",
-            color=(0, 0, 0),
+            color=color_profile["text_color"],
         )
-    page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
+        layout_diagnostics.update(
+            {
+                "ocr_background_luminance": round(color_profile["background_luminance"], 4),
+                "ocr_background_dominant_ratio": round(color_profile["background_dominant_ratio"], 4),
+                "ocr_background_full_clear": True,
+            }
+        )
+    if draw_review_marker:
+        page.draw_rect(rect, color=(0.0, 0.55, 0.0), width=0.8)
     return {
         **layout_diagnostics,
         "ocr_render_mode": "layout_tsv" if rendered_with_layout else "bbox_textbox",
         "ocr_layout_fallback_used": not rendered_with_layout,
+        "ocr_inplace_review_marker_drawn": draw_review_marker,
         "bbox": replacement.get("bbox", {}),
         "crop_bbox": replacement.get("crop_bbox", replacement.get("bbox", {})),
     }
@@ -2510,6 +2648,7 @@ def render_ocr_inplace_prototype(
     output_dir: Path,
     stem: str,
     allowed_native_fit_risks: tuple[str, ...] = ("low", "medium"),
+    draw_ocr_review_markers: bool = True,
 ) -> tuple[Path, dict[str, Any], list[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     source_doc = fitz.open(pdf_path)
@@ -2673,7 +2812,12 @@ def render_ocr_inplace_prototype(
                 readiness_status = replacement.get("ocr_readiness_status", "manual_review")
 
                 if readiness_status == "ready_for_image_overlay":
-                    render_metadata = _apply_ocr_inplace_overlay(page, rect, replacement)
+                    render_metadata = _apply_ocr_inplace_overlay(
+                        page,
+                        rect,
+                        replacement,
+                        draw_review_marker=draw_ocr_review_markers,
+                    )
                     render_metadata["render_zones"] = [
                         _render_zone(
                             "source_replacement_zone",
@@ -2822,6 +2966,8 @@ def render_ocr_inplace_prototype(
         "ocr_review_appendix_page_count": len(ocr_review_appendix_entries),
         "total_skipped": total_skipped,
         "allowed_native_fit_risks": list(allowed_native_fit_risks),
+        "review_final_like": not draw_ocr_review_markers,
+        "ocr_inplace_review_markers": draw_ocr_review_markers,
         "pages": summary_pages,
     }
 
@@ -2847,6 +2993,8 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         f"Selected pages: {summary.get('selected_pages') if summary.get('selected_pages') is not None else 'all'}",
         f"Page count: {summary['page_count']}",
         f"Allowed native fit risks: {summary['allowed_native_fit_risks']}",
+        f"Review final-like: {summary.get('review_final_like', False)}",
+        f"OCR in-place review markers: {summary.get('ocr_inplace_review_markers', True)}",
         f"Total considered replacements: {summary['total_considered_replacements']}",
         f"Total native applied: {summary['total_native_applied']}",
         f"Total OCR in-place applied: {summary['total_ocr_inplace_applied']}",
@@ -2905,6 +3053,10 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
                     f"rendered_blocks={review_item.get('ocr_layout_rendered_block_count', 0)} "
                     f"rendered_lines={review_item.get('ocr_layout_rendered_line_count', 0)} "
                     f"fallback={review_item.get('ocr_layout_fallback_used', False)} "
+                    f"background_luminance={review_item.get('ocr_background_luminance', 'n/a')} "
+                    f"background_dominant={review_item.get('ocr_background_dominant_ratio', 'n/a')} "
+                    f"background_full_clear={review_item.get('ocr_background_full_clear', 'n/a')} "
+                    f"review_marker={review_item.get('ocr_inplace_review_marker_drawn', 'n/a')} "
                     f"bbox={json.dumps(review_item.get('bbox', {}), ensure_ascii=False, sort_keys=True)} "
                     f"crop_bbox={json.dumps(review_item.get('crop_bbox', {}), ensure_ascii=False, sort_keys=True)} "
                 )
@@ -2926,6 +3078,9 @@ def write_ocr_inplace_prototype_summary(
 
 
 def _ocr_inplace_recomposition_review_stem(stem: str) -> str:
+    final_like_suffix = "_ocr_inplace_final_like_prototype"
+    if stem.endswith(final_like_suffix):
+        return f"{stem[:-len(final_like_suffix)]}_ocr_inplace_final_like_recomposition_review"
     suffix = "_ocr_inplace_prototype"
     if stem.endswith(suffix):
         return f"{stem[:-len(suffix)]}_ocr_inplace_recomposition_review"
@@ -3115,6 +3270,10 @@ def _ocr_recomposition_review_html(
                 str(zone.get("zone_type", "unknown"))
                 for zone in item.get("render_zones", [])
             )
+            background_luminance = item.get("ocr_background_luminance", "n/a")
+            background_dominant = item.get("ocr_background_dominant_ratio", "n/a")
+            background_full_clear = item.get("ocr_background_full_clear", "n/a")
+            review_marker = item.get("ocr_inplace_review_marker_drawn", "n/a")
             item_rows.append(
                 "<tr>"
                 f"<td>{escape(str(item.get('segment_id', '')))}</td>"
@@ -3124,6 +3283,10 @@ def _ocr_recomposition_review_html(
                 f"<td>{escape(str(item.get('rendered_with_layout', False)))}</td>"
                 f"<td>{escape(str(item.get('ocr_layout_line_count', 0)))}</td>"
                 f"<td>{escape(str(item.get('ocr_layout_fallback_used', False)))}</td>"
+                f"<td>{escape(str(background_luminance))}</td>"
+                f"<td>{escape(str(background_dominant))}</td>"
+                f"<td>{escape(str(background_full_clear))}</td>"
+                f"<td>{escape(str(review_marker))}</td>"
                 f"<td>{escape(zone_types)}</td>"
                 "</tr>"
             )
@@ -3144,7 +3307,7 @@ def _ocr_recomposition_review_html(
             f"<figure><figcaption>OCR in-place prototype</figcaption><img src=\"{escape(prototype_image)}\" alt=\"Prototype page\"></figure>"
             "</div>"
             "<table>"
-            "<thead><tr><th>Segment</th><th>Kind</th><th>Decision</th><th>ocr_render_mode</th><th>Layout</th><th>TSV lines</th><th>Fallback</th><th>Zones</th></tr></thead>"
+            "<thead><tr><th>Segment</th><th>Kind</th><th>Decision</th><th>ocr_render_mode</th><th>Layout</th><th>TSV lines</th><th>Fallback</th><th>Bg luminance</th><th>Bg dominant</th><th>Full clear</th><th>Marker</th><th>Zones</th></tr></thead>"
             f"<tbody>{''.join(item_rows)}</tbody>"
             "</table>"
             "</section>"
@@ -3173,6 +3336,8 @@ def _ocr_recomposition_review_html(
         f"<span>pages={escape(str(summary.get('page_count', 0)))}</span>"
         f"<span>decisions={escape(json.dumps(summary.get('render_decision_summary', {}), sort_keys=True))}</span>"
         f"<span>ocr_render_modes={escape(json.dumps(summary.get('ocr_render_mode_summary', {}), sort_keys=True))}</span>"
+        f"<span>review_final_like={escape(str(summary.get('review_final_like', False)))}</span>"
+        f"<span>ocr_markers={escape(str(summary.get('ocr_inplace_review_markers', True)))}</span>"
         "</div>"
         f"{''.join(rows)}"
         "</body></html>\n"

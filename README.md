@@ -300,6 +300,12 @@ Or it can generate the OCR fusion plan first:
 ./.venv/bin/python -m pdf_translator.cli ocr-inplace-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract
 ```
 
+For an explicit final-like review artifact that hides OCR in-place review markers while staying in `data/debug/`:
+
+```bash
+./.venv/bin/python -m pdf_translator.cli ocr-inplace-preview data/input/supportpourocr01.pdf --pages 1 --backend tesseract --review-final-like
+```
+
 Useful outputs include:
 
 - `data/debug/*_ocr_dry_run_manifest.json`

@@ -627,6 +627,7 @@ def ocr_inplace_preview(
     pages: str = "1",
     backend: Optional[str] = None,
     plan_json: Optional[Path] = None,
+    review_final_like: bool = False,
 ) -> None:
     """Rend un prototype OCR in-place garde par la readiness OCR."""
     configure_logging()
@@ -645,12 +646,14 @@ def ocr_inplace_preview(
     else:
         replacement_plan_data = json.loads(plan_json.read_text(encoding="utf-8"))
 
-    stem = f"{pdf_path.stem}_ocr_inplace_prototype"
+    stem_suffix = "ocr_inplace_final_like_prototype" if review_final_like else "ocr_inplace_prototype"
+    stem = f"{pdf_path.stem}_{stem_suffix}"
     pdf_output_path, summary, image_paths = render_ocr_inplace_prototype(
         pdf_path=pdf_path,
         fusion_replacement_plan=replacement_plan_data,
         output_dir=settings.debug_dir,
         stem=stem,
+        draw_ocr_review_markers=not review_final_like,
     )
     summary_path = write_ocr_inplace_prototype_summary(summary, settings.debug_dir, stem)
     print(ocr_inplace_prototype_summary_to_text(summary))
