@@ -62,8 +62,8 @@ pdf-translator/
 ├── README.md
 ├── data/
 │   ├── input/
-│   ├── output/
-│   └── debug/
+│   ├── output/   # reserved for future finalized outputs
+│   └── debug/    # current preview, probe, and visual-review artifacts
 ├── scripts/
 ├── src/pdf_translator/
 │   ├── compose/
@@ -202,6 +202,8 @@ Generate a native-text overlay preview directly when OCR is not needed:
 
 ## Debug Artifacts
 
+`data/output/` is reserved for future finalized PDFs and may not exist locally because Git does not track empty directories. The current recomposition workflow writes inspectable artifacts to `data/debug/`.
+
 The pipeline writes useful intermediate artifacts under `data/debug/`, including:
 
 - `document_ir.json`
@@ -214,6 +216,7 @@ The pipeline writes useful intermediate artifacts under `data/debug/`, including
 - OCR candidate reports, crops, manifests, and review reports
 - mixed native/OCR fusion plans, translation previews, replacement plans, strategy reports, and diagnostic overlay PDFs
 - OCR readiness summaries that classify OCR regions before any in-place image recomposition
+- OCR in-place recomposition review HTML files with source/prototype page images, explicit source/annotation/appendix zones, per-page change metrics, and `clean` / `expected_annotation_changes` / `unexpected_outside_changes` verdicts
 
 These artifacts are a core part of the current workflow and make the system much easier to inspect and improve.
 
@@ -332,7 +335,7 @@ Validate the guarded OCR prototype on known probes with:
 
 The probe matrix uses the configured translator and Tesseract by default. Use `--translator mock` or `--backend mock` only for quick debugging when the local model or OCR engine is unavailable. `--require-real-sources` makes the validation fail if the expected OCR source PDFs are missing instead of falling back to synthetic debug PDFs. The local-input run includes `data/input/essai_ocr_02.pdf` when present and reports its route, OCR readiness, recomposition render modes, render decisions, and generated PDF/TXT/PNG/HTML paths.
 
-The OCR in-place prototype also writes `data/debug/*_ocr_inplace_recomposition_review.html` with source/prototype page images and simple recomposition metrics, including global changed pixels and changes outside replacement bboxes.
+The OCR in-place prototype also writes `data/debug/*_ocr_inplace_recomposition_review.html` with source/prototype page images and recomposition metrics by explicit render zone: source replacement zones, annotation zones, appendix zones, changes outside allowed zones, and a page verdict (`clean`, `expected_annotation_changes`, or `unexpected_outside_changes`).
 
 The current OCR in-place prototype is about recomposition fidelity, not final translation quality. Translation text is still an input to stress layout fitting and readiness gates; the project is expected to be connected to a stronger translation model later.
 

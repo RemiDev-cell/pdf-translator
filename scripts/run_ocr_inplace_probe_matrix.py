@@ -163,6 +163,45 @@ def _assert_expected(
     return errors
 
 
+def _assert_recomposition_review(probe_name: str, summary: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    decisions = summary.get("render_decision_summary", {})
+    for page in summary.get("pages", []):
+        page_number = page.get("page_number")
+        metrics = page.get("recomposition_metrics", {})
+        verdict = metrics.get("recomposition_verdict")
+        if verdict == "unexpected_outside_changes":
+            errors.append(
+                f"{probe_name}: page {page_number} has unexpected outside changes "
+                f"ratio={metrics.get('changed_outside_allowed_zone_ratio')}"
+            )
+
+        if page.get("render_decision_summary", {}).get("applied_ocr_inplace", 0):
+            if int(metrics.get("changed_in_source_replacement_zone_count", 0) or 0) <= 0:
+                errors.append(f"{probe_name}: page {page_number} applied OCR in-place without source-zone changes")
+            if float(metrics.get("changed_outside_allowed_zone_ratio", 0.0) or 0.0) > 0.001:
+                errors.append(f"{probe_name}: page {page_number} changed pixels outside allowed zones")
+
+        for item in page.get("render_review_items", []):
+            if item.get("source_kind") != "ocr":
+                continue
+            zone_types = {zone.get("zone_type") for zone in item.get("render_zones", [])}
+            decision = item.get("render_decision")
+            if decision == "applied_ocr_inplace" and "source_replacement_zone" not in zone_types:
+                errors.append(f"{probe_name}: {item.get('segment_id')} missing source_replacement_zone")
+            if decision == "annotated_ocr_side":
+                if "annotation_zone" not in zone_types:
+                    errors.append(f"{probe_name}: {item.get('segment_id')} missing annotation_zone")
+                if "source_replacement_zone" in zone_types:
+                    errors.append(f"{probe_name}: {item.get('segment_id')} should not replace OCR source")
+            if decision == "annotated_ocr_review" and "appendix_zone" not in zone_types:
+                errors.append(f"{probe_name}: {item.get('segment_id')} missing appendix_zone")
+
+    if decisions.get("annotated_ocr_review", 0) and int(summary.get("ocr_review_appendix_page_count", 0) or 0) <= 0:
+        errors.append(f"{probe_name}: review decision did not create appendix page")
+    return errors
+
+
 def _render_probe(
     *,
     name: str,
@@ -228,6 +267,7 @@ def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False
             probe.expected_decisions,
             probe.expected_appendix_pages,
         )
+        probe_errors.extend(_assert_recomposition_review(probe.name, summary))
         errors.extend(probe_errors)
         print(
             _format_probe_line(
@@ -300,6 +340,7 @@ def _run_local_essai_probe(
         plan=result["fusion_replacement_plan"],
         output_dir=output_dir,
     )
+    errors.extend(_assert_recomposition_review("essai_ocr_02", summary))
 
     print(
         _format_probe_line(

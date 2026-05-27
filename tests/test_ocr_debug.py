@@ -1307,13 +1307,19 @@ def test_render_ocr_inplace_prototype_applies_ready_ocr_only(tmp_path: Path) -> 
     assert ready_item["ocr_layout_line_count"] == 0
     assert ready_item["ocr_layout_rendered_block_count"] == 0
     assert ready_item["ocr_layout_fallback_used"] is True
+    assert {zone["zone_type"] for zone in ready_item["render_zones"]} == {"source_replacement_zone"}
     metrics = summary["pages"][0]["recomposition_metrics"]
+    assert metrics["recomposition_verdict"] == "clean"
+    assert metrics["changed_in_source_replacement_zone_count"] > 0
+    assert metrics["changed_outside_allowed_zone_ratio"] == 0.0
     assert metrics["changed_in_replacement_zone_count"] > 0
     assert metrics["changed_in_replacement_zone_ratio"] > 0.1
     assert metrics["changed_outside_replacement_zone_ratio"] < 0.02
     html = review_path.read_text(encoding="utf-8")
     assert "ocr_render_mode" in html
     assert "bbox_textbox" in html
+    assert "source_replacement_zone" in html
+    assert "verdict=clean" in html
     assert image_paths[0].name in html
     assert Path(summary["source_image_paths"][0]).name in html
     assert "decision=applied_ocr_inplace" in text
@@ -1433,7 +1439,14 @@ def test_render_ocr_inplace_prototype_keeps_side_annotation_off_region(tmp_path:
     assert summary["total_ocr_annotated"] == 1
     assert summary["render_decision_summary"] == {"annotated_ocr_side": 1}
     assert summary["ocr_render_mode_summary"] == {"side_annotation": 1}
-    assert summary["pages"][0]["render_review_items"][0]["ocr_render_mode"] == "side_annotation"
+    side_item = summary["pages"][0]["render_review_items"][0]
+    assert side_item["ocr_render_mode"] == "side_annotation"
+    assert {zone["zone_type"] for zone in side_item["render_zones"]} == {"annotation_zone"}
+    metrics = summary["pages"][0]["recomposition_metrics"]
+    assert metrics["recomposition_verdict"] == "expected_annotation_changes"
+    assert metrics["changed_in_source_replacement_zone_count"] == 0
+    assert metrics["changed_in_annotation_zone_count"] > 0
+    assert metrics["changed_outside_allowed_zone_count"] == 0
     assert summary["ocr_recommendation_summary"] == {"image_overlay_candidate": 1}
     assert summary["ocr_readiness_summary"] == {"side_annotation_review": 1}
     assert sum(_rendered_rgb_at(pdf_output_path, 0, 120, 130)) < 30
@@ -1481,7 +1494,16 @@ def test_render_ocr_inplace_prototype_keeps_blocked_ocr_in_review_appendix(tmp_p
     assert summary["total_ocr_review_required"] == 1
     assert summary["render_decision_summary"] == {"annotated_ocr_review": 1}
     assert summary["ocr_render_mode_summary"] == {"review_appendix": 1}
-    assert summary["pages"][0]["render_review_items"][0]["ocr_render_mode"] == "review_appendix"
+    review_item = summary["pages"][0]["render_review_items"][0]
+    assert review_item["ocr_render_mode"] == "review_appendix"
+    assert {zone["zone_type"] for zone in review_item["render_zones"]} == {
+        "annotation_zone",
+        "appendix_zone",
+    }
+    metrics = summary["pages"][0]["recomposition_metrics"]
+    assert metrics["recomposition_verdict"] == "expected_annotation_changes"
+    assert metrics["changed_in_annotation_zone_count"] > 0
+    assert metrics["changed_outside_allowed_zone_count"] == 0
     assert summary["ocr_readiness_summary"] == {"blocked": 1}
     assert summary["ocr_review_appendix_page_count"] == 1
     assert "decision=annotated_ocr_review" in text

@@ -1537,11 +1537,37 @@ def _rect_from_bbox(bbox: dict[str, Any]) -> fitz.Rect | None:
     )
 
 
+def _bbox_from_rect(rect: fitz.Rect) -> dict[str, float]:
+    return {
+        "x0": float(rect.x0),
+        "y0": float(rect.y0),
+        "x1": float(rect.x1),
+        "y1": float(rect.y1),
+    }
+
+
+def _render_zone(
+    zone_type: str,
+    rect: fitz.Rect,
+    *,
+    page_number: int,
+    segment_id: str | None = None,
+) -> dict[str, Any]:
+    zone = {
+        "zone_type": zone_type,
+        "page_number": page_number,
+        "bbox": _bbox_from_rect(rect),
+    }
+    if segment_id:
+        zone["segment_id"] = segment_id
+    return zone
+
+
 def _draw_diagnostic_note(
     page: fitz.Page,
     anchor_rect: fitz.Rect,
     text: str,
-) -> None:
+) -> fitz.Rect:
     note_width = min(260.0, max(150.0, page.rect.width * 0.38))
     note_height = 118.0
     x0 = min(max(12.0, anchor_rect.x1 + 10.0), page.rect.width - note_width - 12.0)
@@ -1573,6 +1599,7 @@ def _draw_diagnostic_note(
             fontname="helv",
             color=(0.2, 0.12, 0.0),
         )
+    return note_rect
 
 
 def _format_ocr_diagnostic_note(
@@ -1627,7 +1654,7 @@ def _draw_ocr_review_appendix_page(
     replacement: dict[str, Any],
     recommendation: str,
     reasons: list[str],
-) -> None:
+) -> dict[str, Any]:
     page = doc.new_page(width=595, height=842)
     page.insert_text(
         fitz.Point(40, 48),
@@ -1645,6 +1672,11 @@ def _draw_ocr_review_appendix_page(
         fontname="helv",
         color=(0.05, 0.05, 0.05),
     )
+    return {
+        "zone_type": "appendix_zone",
+        "page_number": doc.page_count,
+        "bbox": _bbox_from_rect(page.rect),
+    }
 
 
 def _split_text_to_line_count(text: str, line_count: int) -> list[str]:
@@ -2253,7 +2285,20 @@ def render_fusion_overlay_diagnostics(
                     or replacement.get("role") == "table_header_cell"
                 )
             ):
-                record_render_decision(replacement, "applied_native_overlay")
+                record_render_decision(
+                    replacement,
+                    "applied_native_overlay",
+                    {
+                        "render_zones": [
+                            _render_zone(
+                                "source_replacement_zone",
+                                rect,
+                                page_number=page_number,
+                                segment_id=replacement.get("segment_id"),
+                            )
+                        ]
+                    },
+                )
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 translated_text = replacement.get("translated_text", "")
 
@@ -2506,7 +2551,7 @@ def render_ocr_inplace_prototype(
             replacement: dict[str, Any],
             render_decision: str,
             render_metadata: dict[str, Any] | None = None,
-        ) -> None:
+        ) -> dict[str, Any]:
             page_render_decision_summary[render_decision] += 1
             render_decision_summary[render_decision] += 1
             if replacement.get("source_kind") == "ocr" and render_metadata:
@@ -2514,13 +2559,13 @@ def render_ocr_inplace_prototype(
                 if render_mode:
                     page_ocr_render_mode_summary[render_mode] += 1
                     ocr_render_mode_summary[render_mode] += 1
-            render_review_items.append(
-                _fusion_render_review_item(
-                    replacement,
-                    render_decision,
-                    render_metadata,
-                )
+            item = _fusion_render_review_item(
+                replacement,
+                render_decision,
+                render_metadata,
             )
+            render_review_items.append(item)
+            return item
 
         for replacement in page_report.get("replacements", []):
             total_considered += 1
@@ -2569,7 +2614,20 @@ def render_ocr_inplace_prototype(
                     or replacement.get("role") == "table_header_cell"
                 )
             ):
-                record_render_decision(replacement, "applied_native_overlay")
+                record_render_decision(
+                    replacement,
+                    "applied_native_overlay",
+                    {
+                        "render_zones": [
+                            _render_zone(
+                                "source_replacement_zone",
+                                rect,
+                                page_number=page_number,
+                                segment_id=replacement.get("segment_id"),
+                            )
+                        ]
+                    },
+                )
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
                 translated_text = replacement.get("translated_text", "")
 
@@ -2616,6 +2674,14 @@ def render_ocr_inplace_prototype(
 
                 if readiness_status == "ready_for_image_overlay":
                     render_metadata = _apply_ocr_inplace_overlay(page, rect, replacement)
+                    render_metadata["render_zones"] = [
+                        _render_zone(
+                            "source_replacement_zone",
+                            rect,
+                            page_number=page_number,
+                            segment_id=replacement.get("segment_id"),
+                        )
+                    ]
                     record_render_decision(
                         replacement,
                         "applied_ocr_inplace",
@@ -2631,6 +2697,7 @@ def render_ocr_inplace_prototype(
                     else "annotated_ocr_review"
                 )
                 ocr_layout_lines = _filter_ocr_layout_text_lines(replacement.get("ocr_layout") or [])
+                source_annotation_rect = (rect + (-6.0, -24.0, 6.0, 6.0)) & page.rect
                 render_metadata = {
                     "ocr_render_mode": (
                         "side_annotation"
@@ -2645,8 +2712,15 @@ def render_ocr_inplace_prototype(
                     "ocr_layout_fallback_used": False,
                     "bbox": replacement.get("bbox", {}),
                     "crop_bbox": replacement.get("crop_bbox", replacement.get("bbox", {})),
+                    "render_zones": [
+                        _render_zone(
+                            "annotation_zone",
+                            source_annotation_rect,
+                            page_number=page_number,
+                            segment_id=replacement.get("segment_id"),
+                        )
+                    ],
                 }
-                record_render_decision(replacement, render_decision, render_metadata)
                 page.draw_rect(rect, color=(1.0, 0.45, 0.0), width=1.4)
                 label_point = fitz.Point(rect.x0, max(10.0, rect.y0 - 4.0))
                 page.insert_text(
@@ -2657,21 +2731,32 @@ def render_ocr_inplace_prototype(
                     color=(1.0, 0.35, 0.0),
                 )
                 if render_decision == "annotated_ocr_review":
+                    review_item = record_render_decision(replacement, render_decision, render_metadata)
                     ocr_review_appendix_entries.append(
                         {
                             "page_number": page_number,
                             "replacement": replacement,
                             "recommendation": recommendation,
                             "reasons": reasons,
+                            "review_item": review_item,
                         }
                     )
                     total_ocr_review_required += 1
                 else:
-                    _draw_diagnostic_note(
+                    note_rect = _draw_diagnostic_note(
                         page,
                         rect,
                         _format_ocr_diagnostic_note(replacement, recommendation, reasons),
                     )
+                    render_metadata["render_zones"].append(
+                        _render_zone(
+                            "annotation_zone",
+                            note_rect,
+                            page_number=page_number,
+                            segment_id=replacement.get("segment_id"),
+                        )
+                    )
+                    record_render_decision(replacement, render_decision, render_metadata)
                     total_ocr_side_annotated += 1
                 ocr_annotated += 1
                 total_ocr_annotated += 1
@@ -2699,13 +2784,14 @@ def render_ocr_inplace_prototype(
         )
 
     for entry in ocr_review_appendix_entries:
-        _draw_ocr_review_appendix_page(
+        appendix_zone = _draw_ocr_review_appendix_page(
             prototype_doc,
             int(entry["page_number"]),
             entry["replacement"],
             entry["recommendation"],
             entry["reasons"],
         )
+        entry["review_item"].setdefault("render_zones", []).append(appendix_zone)
 
     pdf_output_path = output_dir / f"{stem}.pdf"
     prototype_doc.save(pdf_output_path)
@@ -2789,11 +2875,13 @@ def ocr_inplace_prototype_summary_to_text(summary: dict[str, Any]) -> str:
         metrics = page.get("recomposition_metrics") or {}
         if metrics:
             lines.append(
-                f"  recomposition changed_ratio={metrics.get('changed_pixel_ratio', 0.0)} "
-                f"inside_ratio={metrics.get('changed_in_replacement_zone_ratio', 0.0)} "
-                f"outside_ratio={metrics.get('changed_outside_replacement_zone_ratio', 0.0)} "
+                f"  recomposition verdict={metrics.get('recomposition_verdict', 'unknown')} "
+                f"changed_ratio={metrics.get('changed_pixel_ratio', 0.0)} "
+                f"source_ratio={metrics.get('changed_in_source_replacement_zone_ratio', 0.0)} "
+                f"annotation_ratio={metrics.get('changed_in_annotation_zone_ratio', 0.0)} "
+                f"outside_allowed_ratio={metrics.get('changed_outside_allowed_zone_ratio', 0.0)} "
                 f"changed_pixels={metrics.get('changed_pixel_count', 0)} "
-                f"outside_changed_pixels={metrics.get('changed_outside_replacement_zone_count', 0)}"
+                f"outside_allowed_changed_pixels={metrics.get('changed_outside_allowed_zone_count', 0)}"
             )
         for review_item in page.get("render_review_items", [])[:5]:
             render_line = (
@@ -2871,7 +2959,7 @@ def _point_in_pixel_rects(x: int, y: int, rects: list[tuple[int, int, int, int]]
 def _pixmap_recomposition_metrics(
     source_pixmap: fitz.Pixmap,
     prototype_pixmap: fitz.Pixmap,
-    replacement_rects: list[tuple[int, int, int, int]],
+    zone_rects_by_type: dict[str, list[tuple[int, int, int, int]]],
     *,
     diff_threshold: int = 12,
 ) -> dict[str, Any]:
@@ -2882,20 +2970,33 @@ def _pixmap_recomposition_metrics(
     compared_components = min(3, source_components, prototype_components)
 
     total_pixels = width * height
-    zone_pixels = 0
+    source_zone_pixels = 0
+    annotation_zone_pixels = 0
+    allowed_zone_pixels = 0
     changed_pixels = 0
-    changed_zone_pixels = 0
-    changed_outside_pixels = 0
+    changed_source_zone_pixels = 0
+    changed_annotation_zone_pixels = 0
+    changed_allowed_zone_pixels = 0
+    changed_outside_allowed_pixels = 0
     source_samples = source_pixmap.samples
     prototype_samples = prototype_pixmap.samples
+    source_rects = zone_rects_by_type.get("source_replacement_zone", [])
+    annotation_rects = zone_rects_by_type.get("annotation_zone", [])
+    allowed_rects = source_rects + annotation_rects
 
     for y in range(height):
         source_row_offset = y * source_pixmap.width * source_components
         prototype_row_offset = y * prototype_pixmap.width * prototype_components
         for x in range(width):
-            in_zone = _point_in_pixel_rects(x, y, replacement_rects)
-            if in_zone:
-                zone_pixels += 1
+            in_source_zone = _point_in_pixel_rects(x, y, source_rects)
+            in_annotation_zone = _point_in_pixel_rects(x, y, annotation_rects)
+            in_allowed_zone = in_source_zone or in_annotation_zone
+            if in_source_zone:
+                source_zone_pixels += 1
+            if in_annotation_zone:
+                annotation_zone_pixels += 1
+            if in_allowed_zone:
+                allowed_zone_pixels += 1
 
             source_offset = source_row_offset + (x * source_components)
             prototype_offset = prototype_row_offset + (x * prototype_components)
@@ -2906,17 +3007,29 @@ def _pixmap_recomposition_metrics(
                     break
             if pixel_changed:
                 changed_pixels += 1
-                if in_zone:
-                    changed_zone_pixels += 1
+                if in_source_zone:
+                    changed_source_zone_pixels += 1
+                if in_annotation_zone:
+                    changed_annotation_zone_pixels += 1
+                if in_allowed_zone:
+                    changed_allowed_zone_pixels += 1
                 else:
-                    changed_outside_pixels += 1
+                    changed_outside_allowed_pixels += 1
 
-    outside_pixels = max(0, total_pixels - zone_pixels)
+    outside_allowed_pixels = max(0, total_pixels - allowed_zone_pixels)
 
     def ratio(count: int, denominator: int) -> float:
         if denominator <= 0:
             return 0.0
         return round(count / denominator, 6)
+
+    outside_allowed_ratio = ratio(changed_outside_allowed_pixels, outside_allowed_pixels)
+    if changed_outside_allowed_pixels and outside_allowed_ratio > 0.001:
+        verdict = "unexpected_outside_changes"
+    elif changed_annotation_zone_pixels:
+        verdict = "expected_annotation_changes"
+    else:
+        verdict = "clean"
 
     return {
         "comparison_width_px": width,
@@ -2926,35 +3039,60 @@ def _pixmap_recomposition_metrics(
             or source_pixmap.height != prototype_pixmap.height
         ),
         "total_pixel_count": total_pixels,
-        "replacement_zone_pixel_count": zone_pixels,
-        "outside_replacement_zone_pixel_count": outside_pixels,
+        "source_replacement_zone_pixel_count": source_zone_pixels,
+        "annotation_zone_pixel_count": annotation_zone_pixels,
+        "allowed_zone_pixel_count": allowed_zone_pixels,
+        "outside_allowed_zone_pixel_count": outside_allowed_pixels,
         "changed_pixel_count": changed_pixels,
-        "changed_in_replacement_zone_count": changed_zone_pixels,
-        "changed_outside_replacement_zone_count": changed_outside_pixels,
+        "changed_in_source_replacement_zone_count": changed_source_zone_pixels,
+        "changed_in_annotation_zone_count": changed_annotation_zone_pixels,
+        "changed_in_allowed_zone_count": changed_allowed_zone_pixels,
+        "changed_outside_allowed_zone_count": changed_outside_allowed_pixels,
         "changed_pixel_ratio": ratio(changed_pixels, total_pixels),
-        "changed_in_replacement_zone_ratio": ratio(changed_zone_pixels, zone_pixels),
-        "changed_outside_replacement_zone_ratio": ratio(changed_outside_pixels, outside_pixels),
+        "changed_in_source_replacement_zone_ratio": ratio(changed_source_zone_pixels, source_zone_pixels),
+        "changed_in_annotation_zone_ratio": ratio(changed_annotation_zone_pixels, annotation_zone_pixels),
+        "changed_in_allowed_zone_ratio": ratio(changed_allowed_zone_pixels, allowed_zone_pixels),
+        "changed_outside_allowed_zone_ratio": outside_allowed_ratio,
+        "recomposition_verdict": verdict,
+        # Backward-compatible aliases for older summary readers.
+        "replacement_zone_pixel_count": allowed_zone_pixels,
+        "outside_replacement_zone_pixel_count": outside_allowed_pixels,
+        "changed_in_replacement_zone_count": changed_allowed_zone_pixels,
+        "changed_outside_replacement_zone_count": changed_outside_allowed_pixels,
+        "changed_in_replacement_zone_ratio": ratio(changed_allowed_zone_pixels, allowed_zone_pixels),
+        "changed_outside_replacement_zone_ratio": outside_allowed_ratio,
     }
 
 
-def _replacement_pixel_rects_for_page(
+def _zone_pixel_rects_for_page(
     page_summary: dict[str, Any],
     *,
     width: int,
     height: int,
     zoom: float,
-) -> list[tuple[int, int, int, int]]:
-    rects: list[tuple[int, int, int, int]] = []
+) -> dict[str, list[tuple[int, int, int, int]]]:
+    rects_by_type: dict[str, list[tuple[int, int, int, int]]] = {
+        "source_replacement_zone": [],
+        "annotation_zone": [],
+        "appendix_zone": [],
+    }
+    page_number = int(page_summary.get("page_number", 0) or 0)
     for item in page_summary.get("render_review_items", []):
-        rect = _bbox_to_pixel_rect(
-            item.get("bbox") or {},
-            zoom=zoom,
-            width=width,
-            height=height,
-        )
-        if rect is not None:
-            rects.append(rect)
-    return rects
+        for zone in item.get("render_zones", []):
+            zone_type = zone.get("zone_type")
+            if zone_type not in rects_by_type:
+                continue
+            if int(zone.get("page_number", page_number) or page_number) != page_number:
+                continue
+            rect = _bbox_to_pixel_rect(
+                zone.get("bbox") or {},
+                zoom=zoom,
+                width=width,
+                height=height,
+            )
+            if rect is not None:
+                rects_by_type[zone_type].append(rect)
+    return rects_by_type
 
 
 def _ocr_recomposition_review_html(
@@ -2973,6 +3111,10 @@ def _ocr_recomposition_review_html(
         review_items = page.get("render_review_items", [])
         item_rows = []
         for item in review_items:
+            zone_types = ",".join(
+                str(zone.get("zone_type", "unknown"))
+                for zone in item.get("render_zones", [])
+            )
             item_rows.append(
                 "<tr>"
                 f"<td>{escape(str(item.get('segment_id', '')))}</td>"
@@ -2982,6 +3124,7 @@ def _ocr_recomposition_review_html(
                 f"<td>{escape(str(item.get('rendered_with_layout', False)))}</td>"
                 f"<td>{escape(str(item.get('ocr_layout_line_count', 0)))}</td>"
                 f"<td>{escape(str(item.get('ocr_layout_fallback_used', False)))}</td>"
+                f"<td>{escape(zone_types)}</td>"
                 "</tr>"
             )
 
@@ -2989,9 +3132,11 @@ def _ocr_recomposition_review_html(
             "<section>"
             f"<h2>Page {escape(str(page.get('page_number')))}</h2>"
             "<div class=\"metrics\">"
+            f"<span>verdict={escape(str(metrics.get('recomposition_verdict', 'unknown')))}</span>"
             f"<span>changed={escape(str(metrics.get('changed_pixel_ratio', 0.0)))}</span>"
-            f"<span>inside={escape(str(metrics.get('changed_in_replacement_zone_ratio', 0.0)))}</span>"
-            f"<span>outside={escape(str(metrics.get('changed_outside_replacement_zone_ratio', 0.0)))}</span>"
+            f"<span>source={escape(str(metrics.get('changed_in_source_replacement_zone_ratio', 0.0)))}</span>"
+            f"<span>annotation={escape(str(metrics.get('changed_in_annotation_zone_ratio', 0.0)))}</span>"
+            f"<span>outside_allowed={escape(str(metrics.get('changed_outside_allowed_zone_ratio', 0.0)))}</span>"
             f"<span>modes={escape(json.dumps(page.get('ocr_render_mode_summary', {}), sort_keys=True))}</span>"
             "</div>"
             "<div class=\"images\">"
@@ -2999,7 +3144,7 @@ def _ocr_recomposition_review_html(
             f"<figure><figcaption>OCR in-place prototype</figcaption><img src=\"{escape(prototype_image)}\" alt=\"Prototype page\"></figure>"
             "</div>"
             "<table>"
-            "<thead><tr><th>Segment</th><th>Kind</th><th>Decision</th><th>ocr_render_mode</th><th>Layout</th><th>TSV lines</th><th>Fallback</th></tr></thead>"
+            "<thead><tr><th>Segment</th><th>Kind</th><th>Decision</th><th>ocr_render_mode</th><th>Layout</th><th>TSV lines</th><th>Fallback</th><th>Zones</th></tr></thead>"
             f"<tbody>{''.join(item_rows)}</tbody>"
             "</table>"
             "</section>"
@@ -3066,7 +3211,7 @@ def write_ocr_inplace_recomposition_review(
             source_pixmap.save(source_image_path)
             source_image_paths.append(source_image_path)
 
-            replacement_rects = _replacement_pixel_rects_for_page(
+            zone_rects_by_type = _zone_pixel_rects_for_page(
                 page_summary,
                 width=min(source_pixmap.width, prototype_pixmap.width),
                 height=min(source_pixmap.height, prototype_pixmap.height),
@@ -3075,7 +3220,7 @@ def write_ocr_inplace_recomposition_review(
             metrics = _pixmap_recomposition_metrics(
                 source_pixmap,
                 prototype_pixmap,
-                replacement_rects,
+                zone_rects_by_type,
             )
             metrics.update(
                 {
