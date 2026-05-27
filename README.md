@@ -60,6 +60,7 @@ Ce projet est construit par étapes :
 ```text
 pdf-translator/
 ├── .env.example
+├── HANDOFF.md
 ├── README.md
 ├── data/
 │   ├── input/
@@ -75,6 +76,12 @@ pdf-translator/
 │   └── translate/
 └── tests/
 ```
+
+## Reprise Projet / Handoff
+
+Pour reprendre le projet en équipe, lire d'abord ce README pour comprendre le périmètre, les commandes et les limites actuelles, puis lire `HANDOFF.md`.
+
+`HANDOFF.md` est maintenant versionné dans le dépôt. Il décrit l'état réel de `main`, la distance restante jusqu'à une version finalisée, les validations connues, les contraintes à conserver et la roadmap opérationnelle recommandée.
 
 ## Stack Locale
 
