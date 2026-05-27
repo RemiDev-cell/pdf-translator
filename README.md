@@ -347,6 +347,8 @@ The probe matrix uses the configured translator and Tesseract by default. Use `-
 
 When a probe actually applies OCR in-place, the matrix also renders a final-like review artifact with OCR review markers hidden. It validates that this final-like rendering keeps the same render decisions, remains `clean`, has no changed pixels outside allowed zones, and reports `ocr_inplace_review_markers=False`. Probes that only use side annotations or manual-review appendices report final-like rendering as not applicable.
 
+The generated OCR in-place probes cover both a dark-background image (`03_mixed_native_ocr_image.pdf`) and a light-background image (`04_mixed_light_ocr_image.pdf`) so the automatic background and text-color choices are checked on both sides.
+
 The OCR in-place prototype also writes `data/debug/*_ocr_inplace_recomposition_review.html` with source/prototype page images and recomposition metrics by explicit render zone: source replacement zones, annotation zones, appendix zones, changes outside allowed zones, and a page verdict (`clean`, `expected_annotation_changes`, or `unexpected_outside_changes`).
 
 The current OCR in-place prototype is about recomposition fidelity, not final translation quality. Translation text is still an input to stress layout fitting and readiness gates; the project is expected to be connected to a stronger translation model later.
@@ -360,6 +362,9 @@ Synthetic and real test PDFs currently used:
 - `scientifique-mixte.pdf`
 - `layout-tricky.pdf`
 - `supportpourocr01.pdf`
+- `02_scanned_pure_ocr.pdf`
+- `03_mixed_native_ocr_image.pdf`
+- `04_mixed_light_ocr_image.pdf`
 
 Additional local OCR probes may be present but are intentionally ignored by Git, for example `essai_ocr_02.pdf`.
 

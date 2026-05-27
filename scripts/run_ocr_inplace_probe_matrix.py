@@ -16,6 +16,7 @@ from pdf_translator.ocr.debug import (
     write_ocr_inplace_prototype_summary,
 )
 from pdf_translator.ocr.experiment import run_ocr_experiment
+from pdf_translator.pipeline import run_document_preview
 from pdf_translator.qa.checks import annotate_repeated_blocks
 from pdf_translator.routing import build_document_routing_report
 from pdf_translator.translate.translator import translate_text, translate_text_mock
@@ -33,6 +34,11 @@ class ExpectedProbe:
     source_pdf: Path | None
     expected_decisions: dict[str, int]
     expected_appendix_pages: int | None = None
+    generate_plan_if_missing: bool = False
+    expected_ocr_background_luminance_min: float | None = None
+    expected_ocr_background_luminance_max: float | None = None
+    expected_ocr_background_dominant_ratio_min: float | None = None
+    expected_ocr_background_full_clear: bool | None = None
 
 
 EXPECTED_PROBES = [
@@ -51,6 +57,17 @@ EXPECTED_PROBES = [
         expected_appendix_pages=0,
     ),
     ExpectedProbe(
+        name="04_mixed_light_ocr_image",
+        plan_path=DEFAULT_DEBUG_DIR / "04_mixed_light_ocr_image_document_preview_fusion_replacement_plan.json",
+        source_pdf=PROJECT_ROOT / "data" / "input" / "04_mixed_light_ocr_image.pdf",
+        expected_decisions={"applied_ocr_inplace": 1},
+        expected_appendix_pages=0,
+        generate_plan_if_missing=True,
+        expected_ocr_background_luminance_min=0.75,
+        expected_ocr_background_dominant_ratio_min=0.60,
+        expected_ocr_background_full_clear=True,
+    ),
+    ExpectedProbe(
         name="02_scanned_pure_ocr",
         plan_path=DEFAULT_DEBUG_DIR / "02_scanned_pure_ocr_document_preview_fusion_replacement_plan.json",
         source_pdf=PROJECT_ROOT / "data" / "input" / "02_scanned_pure_ocr.pdf",
@@ -66,6 +83,41 @@ def _load_plan(plan_path: Path) -> dict[str, Any]:
             f"Missing plan JSON: {plan_path}. Regenerate it with document-preview or ocr-experiment first."
         )
     return json.loads(plan_path.read_text(encoding="utf-8"))
+
+
+def _load_or_generate_plan(
+    probe: ExpectedProbe,
+    *,
+    output_dir: Path,
+    backend: str,
+    translator_mode: str,
+) -> dict[str, Any]:
+    if probe.plan_path.exists():
+        return _load_plan(probe.plan_path)
+
+    if not probe.generate_plan_if_missing:
+        return _load_plan(probe.plan_path)
+
+    if not probe.source_pdf or not probe.source_pdf.exists():
+        raise FileNotFoundError(
+            f"{probe.name}: missing {probe.source_pdf}; run scripts/generate_test_pdfs.py first."
+        )
+
+    result = run_document_preview(
+        pdf_path=probe.source_pdf,
+        output_dir=output_dir,
+        selected_pages=[1],
+        translate_text_fn=_translator_for_mode(translator_mode),
+        backend=backend,
+        artifact_stem=f"{probe.name}_document_preview",
+    )
+    preview_result = result.get("preview_result", {})
+    plan = preview_result.get("fusion_replacement_plan")
+    if not plan:
+        raise FileNotFoundError(
+            f"{probe.name}: generated document preview did not produce a fusion replacement plan."
+        )
+    return plan
 
 
 def _max_page_size_from_plan(plan: dict[str, Any]) -> tuple[float, float]:
@@ -202,6 +254,75 @@ def _assert_recomposition_review(probe_name: str, summary: dict[str, Any]) -> li
     return errors
 
 
+def _assert_ocr_background_metrics(
+    probe_name: str,
+    summary: dict[str, Any],
+    *,
+    luminance_min: float | None = None,
+    luminance_max: float | None = None,
+    dominant_ratio_min: float | None = None,
+    full_clear: bool | None = None,
+) -> list[str]:
+    if (
+        luminance_min is None
+        and luminance_max is None
+        and dominant_ratio_min is None
+        and full_clear is None
+    ):
+        return []
+
+    errors: list[str] = []
+    applied_items: list[dict[str, Any]] = []
+    for page in summary.get("pages", []):
+        applied_items.extend(
+            item
+            for item in page.get("render_review_items", [])
+            if item.get("source_kind") == "ocr"
+            and item.get("render_decision") == "applied_ocr_inplace"
+        )
+
+    if not applied_items:
+        return [f"{probe_name}: expected OCR background metrics but found no applied OCR in-place items"]
+
+    for item in applied_items:
+        segment_id = item.get("segment_id")
+        try:
+            luminance = float(item["ocr_background_luminance"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{probe_name}: {segment_id} missing OCR background luminance")
+            luminance = None
+        try:
+            dominant_ratio = float(item["ocr_background_dominant_ratio"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{probe_name}: {segment_id} missing OCR background dominant ratio")
+            dominant_ratio = None
+
+        if luminance is not None and luminance_min is not None and luminance < luminance_min:
+            errors.append(
+                f"{probe_name}: {segment_id} background luminance {luminance} < {luminance_min}"
+            )
+        if luminance is not None and luminance_max is not None and luminance > luminance_max:
+            errors.append(
+                f"{probe_name}: {segment_id} background luminance {luminance} > {luminance_max}"
+            )
+        if (
+            dominant_ratio is not None
+            and dominant_ratio_min is not None
+            and dominant_ratio < dominant_ratio_min
+        ):
+            errors.append(
+                f"{probe_name}: {segment_id} background dominant ratio {dominant_ratio} < "
+                f"{dominant_ratio_min}"
+            )
+        if full_clear is not None and item.get("ocr_background_full_clear") is not full_clear:
+            errors.append(
+                f"{probe_name}: {segment_id} expected background full_clear={full_clear}, "
+                f"got {item.get('ocr_background_full_clear')}"
+            )
+
+    return errors
+
+
 def _should_render_final_like(summary: dict[str, Any]) -> bool:
     decisions = summary.get("render_decision_summary", {})
     return int(decisions.get("applied_ocr_inplace", 0) or 0) > 0
@@ -333,11 +454,22 @@ def _format_final_like_line(
     )
 
 
-def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False) -> list[str]:
+def _run_expected_probes(
+    output_dir: Path,
+    *,
+    backend: str,
+    translator_mode: str,
+    require_real_sources: bool = False,
+) -> list[str]:
     errors: list[str] = []
     for probe in EXPECTED_PROBES:
         try:
-            plan = _load_plan(probe.plan_path)
+            plan = _load_or_generate_plan(
+                probe,
+                output_dir=output_dir,
+                backend=backend,
+                translator_mode=translator_mode,
+            )
             source_pdf, source_mode = _resolve_probe_source(
                 probe,
                 plan,
@@ -360,6 +492,16 @@ def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False
             probe.expected_appendix_pages,
         )
         probe_errors.extend(_assert_recomposition_review(probe.name, summary))
+        probe_errors.extend(
+            _assert_ocr_background_metrics(
+                probe.name,
+                summary,
+                luminance_min=probe.expected_ocr_background_luminance_min,
+                luminance_max=probe.expected_ocr_background_luminance_max,
+                dominant_ratio_min=probe.expected_ocr_background_dominant_ratio_min,
+                full_clear=probe.expected_ocr_background_full_clear,
+            )
+        )
         if _should_render_final_like(summary):
             final_pdf_path, final_summary, final_image_paths, final_summary_path = _render_final_like_probe(
                 name=probe.name,
@@ -372,6 +514,16 @@ def _run_expected_probes(output_dir: Path, *, require_real_sources: bool = False
                     probe.name,
                     summary,
                     final_summary,
+                )
+            )
+            probe_errors.extend(
+                _assert_ocr_background_metrics(
+                    probe.name,
+                    final_summary,
+                    luminance_min=probe.expected_ocr_background_luminance_min,
+                    luminance_max=probe.expected_ocr_background_luminance_max,
+                    dominant_ratio_min=probe.expected_ocr_background_dominant_ratio_min,
+                    full_clear=probe.expected_ocr_background_full_clear,
                 )
             )
         else:
@@ -582,6 +734,8 @@ def main() -> int:
         print("Expected probes require real source PDFs.")
     errors = _run_expected_probes(
         output_dir,
+        backend=args.backend,
+        translator_mode=args.translator,
         require_real_sources=args.require_real_sources,
     )
 

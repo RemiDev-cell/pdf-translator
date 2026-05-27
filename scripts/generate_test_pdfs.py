@@ -309,6 +309,50 @@ def build_mixed_native_ocr_image(output_dir: Path) -> None:
     doc.close()
 
 
+def build_mixed_light_ocr_image(output_dir: Path) -> None:
+    def draw_ocr_image(page: fitz.Page) -> None:
+        light_fill = (0.94, 0.94, 0.88)
+        dark_text = (0.05, 0.05, 0.05)
+        page.draw_rect(page.rect, color=light_fill, fill=light_fill, width=0)
+        page.insert_text((30, 50), "Modele clair OCR", fontsize=18, fontname=FONT, color=dark_text)
+        page.insert_text((30, 88), "Texte court pour remplacement.", fontsize=14, fontname=FONT, color=dark_text)
+        page.insert_text((30, 118), "La zone doit rester propre.", fontsize=14, fontname=FONT, color=dark_text)
+
+    ocr_pixmap = _text_image_pixmap(390, 210, draw_ocr_image)
+
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_textbox(
+        fitz.Rect(56.7, 56.5, 386.0, 70.8),
+        "Document mixte: texte natif + image OCR claire",
+        fontsize=10.5,
+        fontname=FONT,
+    )
+    page.insert_textbox(
+        fitz.Rect(56.7, 83.5, 538.5, 108.0),
+        (
+            "Ce haut de page est natif. La zone centrale est une image claire contenant du texte "
+            "OCR court, prevue pour verifier le rendu in-place sur fond lumineux."
+        ),
+        fontsize=9.2,
+        fontname=FONT,
+    )
+    page.insert_image(
+        fitz.Rect(102.5, 149.0, 492.5, 359.0),
+        pixmap=ocr_pixmap,
+    )
+    page.insert_textbox(
+        fitz.Rect(56.7, 399.0, 538.5, 437.0),
+        "Bas de page natif pour controle OCR. La zone image reste separee.",
+        fontsize=9.0,
+        fontname=FONT,
+    )
+
+    output_path = output_dir / "04_mixed_light_ocr_image.pdf"
+    doc.save(output_path)
+    doc.close()
+
+
 def build_scanned_pure_ocr(output_dir: Path) -> None:
     def draw_scanned_page(page: fitz.Page) -> None:
         page.draw_rect(page.rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
@@ -349,6 +393,7 @@ def main() -> None:
         ("layout-tricky.pdf", build_layout_tricky),
         ("02_scanned_pure_ocr.pdf", build_scanned_pure_ocr),
         ("03_mixed_native_ocr_image.pdf", build_mixed_native_ocr_image),
+        ("04_mixed_light_ocr_image.pdf", build_mixed_light_ocr_image),
     ]
 
     print("PDF fixtures:")
